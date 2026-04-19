@@ -1,0 +1,436 @@
+GOLDBACH FUNDAMENTALS — MASTER SUMMARY & INDEX
+By Hopiplaka | 2025.03 | 195 Pages
+
+"If only you would know the magnificence of the 3, 6, and 9, you would have a key to the universe." — Nikola Tesla
+
+
+TABLE OF CONTENTS (INDEX)
+#ChapterPageTopic0Prologue2Framework overview — 3 (price structure), 6 (Goldbach levels), 9 (time)1Power of Three Numbers16PO3 math, calculating dealing range sizes2Goldbach Levels21Partitions of 100, PD area mappings, inverse levels3ADealing Ranges35PO3 DR, Goldbach DR, intended DR, stop runs, liquidity3BLook Back Partitions859-based time sequence, HIPPO, Goldbach Time (GBT)4AMD Cycle125Accumulation/Manipulation/Distribution, fractals, candle counting5Goldbach Algorithms141Tesla Vortex-derived Algo 1 & 2, MMxM mapping6Putting Everything Together152MMxM + OTE + Algo synthesis, Goldbach Time—Trade Plans1648 specific trade plans with entry/exit rules—Miscellaneous182PO3 DR Shifting, SMT alignment—The End185Risk management, acronyms, closing
+
+CHAPTER 0 — PROLOGUE
+Pages 2–14
+Core Premise
+The book maps price action across all tradeable assets (forex, metals, indices, crypto) using three numbers rooted in the Tesla Vortex — 3, 6, and 9 — each assigned a specific role:
+NumberDomainFunction3PricePowers of Three define dealing range sizes6PriceGoldbach levels are ~6% apart — separating institutional PD areas9TimeLook back partition sequence is built on multiples of 9
+Key Notes
+
+The author credits ICT (Michael J. Huddleston / Inner Circle Trader) as a philosophical influence but states Goldbach levels and PO3 dealing ranges are original to this book.
+This is the Fundamentals volume — it covers only the basics: PO3, Goldbach levels, and look back periods.
+All ICT PD area terminology (order block, FVG, breaker, mitigation block, etc.) maps directly to Goldbach levels inside a dealing range.
+
+
+CHAPTER 1 — POWER OF THREE NUMBERS (PO3)
+Pages 16–20
+What Is PO3?
+A Power of Three number is any result of 3^n (3 raised to an integer). In trading, these numbers serve as the standardized sizes for dealing ranges, stop runs, and liquidity measurements.
+PO3 Reference Table
+ExponentValue (Range Size)3¹33²93³273⁴813⁵2433⁶7293⁷2,1873⁸6,5613⁹19,6833¹⁰59,0493¹¹177,1473¹²531,441
+Application by Asset
+
+Forex (e.g. EURUSD): Values expressed in pips (e.g., 243 pip dealing range)
+Indices (e.g. NQ/ES): Values expressed in points (e.g., 81 point range)
+Crypto: Dollar amounts (e.g., BTC's 177,147 range)
+
+Key Concepts
+
+Expansion: Moving from a smaller PO3 number to the next larger (e.g., 27 → 81)
+Contraction: Moving from a larger PO3 number to the next smaller (e.g., 729 → 243)
+These numbers appear as stop run sizes, wick sizes, gap sizes, and full dealing range boundaries throughout all timeframes.
+
+
+CHAPTER 2 — GOLDBACH LEVELS
+Pages 21–34
+What Is Goldbach?
+Goldbach's Conjecture states: every even number greater than 2 is the sum of two prime numbers. Applied to trading, a dealing range is treated as 100%, and Goldbach partitions identify the prime-pair levels within it.
+The 7 Goldbach Partitions of 100
+PartitionDiscount LevelPremium Level1010023973118941783529716415974753
+
+Most levels are 6% apart from one another.
+The 2nd partition (3/97) is only 3% from the extreme (0/100).
+The jump between partitions 4 and 5 (17→29, 83→71) is 12% — this gap is the Liquidity Void zone.
+
+Goldbach → ICT PD Area Mapping
+Goldbach LevelICT PD Area0 / 100High / Low (range extreme)3 / 97Rejection Block11 / 89Order Block17 / 83Fair Value Gap29 / 71Liquidity Void41 / 59Breaker Block47 / 53Mitigation Block
+Non-Goldbach Levels
+The 12% Liquidity Void zone is divided by semi-prime midpoints at 23/77 and 35/65. These are not true Goldbach numbers but act as meaningful support/resistance, particularly for imbalances (FVGs).
+Middle of Goldbach Blocks
+Each 6% block between two consecutive Goldbach levels has its own midpoint — the Mean Threshold (MT). These act as secondary S/R and are relevant for entries, especially when labeled as:
+
+CE (Consequent Encroachment): Midpoint of a FVG
+MT (Mean Threshold): Midpoint of an order block
+
+The Logo & IPDA Connection
+ICT's logo encodes the Goldbach partition structure visually (premium circle, discount circle, inner circle). The Goldbach numbers align precisely with all ICT PD areas — including the ERD (External Range Delimiter), which is the fair value of the next range above/below — the target of a PO3 stop run (turtle soup).
+Inverse Goldbach Numbers
+Reversing each Goldbach number's digits produces a new set of levels that explain ICT's concept of inversion (failed order blocks → mitigation blocks, etc.). Key inverse pairs that match existing levels: 3↔3, 11↔11, 17↔71, 35↔53. The inverses of "non-matching" levels (e.g., 14, 32, 38, 56) fill in the midpoints between existing levels, explaining erratic price behavior near range extremes ("search and destroy" candles).
+
+CHAPTER 3A — DEALING RANGES
+Pages 35–83
+What Is a Dealing Range?
+A dealing range (DR) is a defined price range treated as 100%, within which Goldbach levels are plotted. Price behavior inside a DR follows four patterns:
+
+Consolidation — flat, low-movement price
+Expansion — directional move toward DR high or low
+Retrace — pullback during expansion (zigzag delivery)
+Reversal — price reaches DR extreme and reverses
+
+Three Types of Dealing Ranges
+1. PO3 Dealing Range (PDR)
+Built using a PO3 number as range size with Goldbach levels plotted inside using a Fibonacci tool.
+Optimal PDR Calibration:
+
+Too many reactions per day (5+) → PO3 is too small → expand to next PO3
+Too few reactions per day (0–1) → PO3 is too large → contract to previous PO3
+Target: 2–3 Goldbach level reactions per day
+Use a 1H chart to calibrate. Recalibrate monthly.
+Also monitor PO3-1 (one level smaller) and PO3+1 (one level larger) for confluence.
+
+2. Goldbach Dealing Range (GDR)
+A fractal range drawn between two Goldbach levels of a larger PDR. Used for scalping on lower timeframes. The same Goldbach partition structure applies at the micro level.
+3. Intended Dealing Range (IDR)
+The long-term PO3 range an asset is destined to trade within for years or decades. New assets (e.g., Bitcoin) reveal their IDR through a recognizable pattern:
+
+Consolidation forms in the 2nd Goldbach block (3→11)
+A gap forms in the 3rd Goldbach block (11→17)
+Price expands to Goldbach blocks 5 or 6, retraces to blocks 2–3
+Aggressive expansion to range high → IDR is confirmed
+
+Hidden Range: When moving from one PO3 to the next, monitor the midpoint range: (current PO3 + next PO3) / 2 — e.g., moving from 81 to 243 → watch the 162 range.
+Calculating a Fixed PO3 Dealing Range
+
+Take current asset price, strip decimals (or take first 5 digits for forex)
+DR Low = floor(price / PO3) × PO3
+DR High = DR Low + PO3
+Reinsert decimal point for forex assets
+
+AssetCurrent PriceInputPO3DR LowEURUSD1.234591234524312150 → 1.2150SP5004032.84032813969Bitcoin23589.423589218721870
+Dynamic Optimal Dealing Range
+Instead of anchoring to base 0, anchor the midpoint of the Goldbach Fib to the daily fix price (the asset's daily settlement/reference price). For NQ this is calculated from the last 30 seconds before 16:00 ET. This acts as a price magnet throughout the session.
+PO3 Stop Runs
+Two forms:
+
+Liquidity Stop Run: Stops resting beyond an old high/low are swept by a PO3-sized move (3, 9, 27 pips), triggering a reversal
+Wick Stop Run: Price creates a candle wick of exact PO3 size at a Goldbach level — validates the Rejection Block
+
+Rule of thumb: For a 729 PDR, look for PO3-2 (81-point) stop runs outside the range. For stop runs inside smaller ranges, 3 or 9 pip wicks are common.
+STDV PO3 Levels
+From the daily fix price, project PO3-sized standard deviation lines above and below. These act as intraday S/R for scalpers (every 27 handles for NQ scalping, every 81 handles for intraday).
+PO3 Liquidity
+Price often stops a PO3 number short of a Goldbach level, leaving a "liquidity pocket":
+
+A 3-pip gap short of a level may require a 9-pip stop run to clear it
+Liquidity appears as: gaps of PO3 size, order blocks of PO3 size, or swing lows/highs a PO3 distance short of a Goldbach level
+
+Paradigm: Goldbach level → untouched → short-term low/high forms above/below it (PO3 size) → liquidity run clears it using a PO3 stop run.
+How to Trade by Trader Type
+Trader TypeApproachPO3 SizeTrade PlanPosition/Long-termFollow "story of price" through blocks; wait for PD area block to form2187, 6561+Look Back Trade PlanOSOK/Short-termDefine adequate range (243–729); wait for manipulation cycle + PO3 stop run243–729OSOK Trade PlanDay TraderTrade level to level (Goldbach to Goldbach); no story required81–243Personal Trade PlanScalperEnter at Goldbach level; exit at previous swing; target 5–10 pips27–81Scalper Protocol
+
+CHAPTER 3B — LOOK BACK PARTITIONS
+Pages 85–124
+What Is the Look Back Partition?
+A time-based system using multiples of 9 (the Tesla Vortex) to define monthly anchor points throughout the year. Each partition marks the start of a new ~30-day window for seeking a major price reversal.
+The Sequence & Monthly Calendar
+Starting from 18, add 9 each time. Skip 9 and 90. Split the result: leading digits = month, last digit = day:
+NumberMonthDayLook For18January8th18-pip stop run/gap/OB27February7th27-pip36March6th36-pip45April5th45-pip54May4th54-pip63June3rd63-pip72July2nd72-pip81August1st81-pip99September9th99-pip108October8th108-pip117November7th117-pip126December6th126-pip
+
+If the date falls on a weekend, use the following Monday.
+Look back window = 20–60 days (1–3 prior partitions).
+
+How to Use Look Back Partitions
+
+At the start of each partition, identify the partition number (e.g., 108 for October)
+Look for a clue in the previous 1–3 partitions: a stop run, FVG, or order block of exactly that pip size
+Expect price to hit this clue during the first few trading days of the new partition
+After the clue is hit, expect an opposite PO3 stop run (reversal signal)
+Price returns to the partition's trading range after the reversal
+
+Goldbach Time (GBT) for Look Backs
+Add the day number + month number. When the sum equals a Goldbach number, that's a GBT anchor day.
+
+GBT 11 (day + month = 11): Expect the look back clue to be hit on this day. Example: January is month 1, so day 10 = 1+10 = 11 → look back clue hits January 10th.
+After the GBT 11 clue hit, expect the reversal/stop run 11 or 17 days later.
+
+HIPPO (Hidden Interbank Price Point Objective)
+A HIPPO is a "hidden" order block formed from 2 consecutive candles that both create FVGs:
+
+Connect the top wick of candle 1 to the bottom wick of candle 2 → reveals a hidden zone
+HIPPOs frequently form around:
+
+CE (Consequent Encroachment) levels
+Non-Goldbach levels (23/77 and 35/65)
+These become trigger points for breakaway and measuring gaps
+
+
+Like regular OBs, HIPPOs can "invert" — when traded through, they become mitigation levels on a retrace
+
+HIPPO Sensitivity Point: The close of candle 1 / open of candle 2 junction is the most precise S/R within the HIPPO.
+
+CHAPTER 4 — AMD CYCLE
+Pages 125–139
+What Is AMD?
+Accumulation–Manipulation–Distribution is a 3-phase model for price delivery, fractal across all timeframes. Represents the same "left circle – small circle – right circle" structure seen in ICT's logo.
+Yearly AMD Cycle
+Based on ~260 trading days per year (52 weeks × 5 days), the nearest PO3 = 243, leaving ~17 trading days (December) as the yearly range reset.
+PhaseMonthsCharacterAccumulation (A)January – AprilRange building, sidewaysManipulation (M)April – MayFalse breakout, Judas swingDistribution (D)May – NovemberTrue directional move
+Daily AMD Cycle (Forex / CLS Time)
+CLS settles in CET. A true trading day = 20:00–20:00 CET (14:00–14:00 EST):
+PhaseSessionDurationCharacterA – AnalyseAsian Range9 hoursConsolidation, read market intentM – MarkLondon Open (05:00–11:00 CET)6 hoursIdeal entry zone, PO3 stop run hereD – DeliverNew York (D1) + London Close (D2)9 hoursPosition management, two delivery phases
+
+D1: First distribution phase — manage position
+D2: Watch for reversals; be cautious if M cycle was large
+
+Fractal AMD
+Every A, M, or D phase contains its own nested AMD cycle. Each main cycle has 3 sub-cycles, giving up to 9 sub-cycles per main phase. The 0.81 level of the distribution cycle is where a mid-cycle retracement or reversal commonly occurs.
+Remapping AMD to Action
+
+A → Analyse: Read what the Asian range is doing
+M → Mark: This is your entry window. Look for PO3 stop run into a Goldbach level at the middle of the M phase
+D → Deal: Manage the trade; watch for reversal in D2
+
+Distortion of Time
+Ideal setup: PO3 stop run occurs in the middle of the M cycle, into a Goldbach level. If the run occurs at the start or end of the M cycle instead, this is "distortion of time" — still valid, just less textbook timing.
+Candle Counting (7-13-21)
+When drawing an AMD cycle between two look back partitions on the daily chart:
+
+Day 7: End of A cycle
+Day 13: End of M cycle
+Day 21: End of D cycle
+
+These numbers align with AMD turning points when properly anchored to a look back partition start.
+
+CHAPTER 5 — GOLDBACH ALGORITHMS
+Pages 141–151
+Derivation: Modified Tesla Vortex
+Using a Tesla Vortex calculation with:
+
+Modulus: 14 (14 Goldbach levels in the 7 partitions)
+Multiplier: 3 (Power of Three)
+
+Two distinct paths emerge from the vortex — these are the two Goldbach Algorithms.
+Algorithm 1 (Blue Path) — Market Maker Cross Model
+Sequential price delivery path (mapped to Goldbach levels):
+HIGH/LOW (0/100)
+→ ORDER BLOCK (11/89)
+→ OPPOSITE BREAKER (41/59)
+→ OPPOSITE REJECTION BLOCK (3/97)
+→ OPPOSITE FAIR VALUE (17/83)
+→ LIQUIDITY VOID (29/71)
+Used for trending moves and MMxM models. Always starts from the dealing range extreme.
+Algorithm 2 (Orange Path) — Trending/Continuation Model
+REJECTION BLOCK (3/97)
+→ BREAKER (41/59)
+→ FAIR VALUE (17/83)
+→ OPPOSITE ORDER BLOCK (11/89)
+→ OPPOSITE MITIGATION BLOCK (47/53)
+→ OPPOSITE LIQUIDITY VOID (29/71)
+Used when price starts from a rejection zone rather than the extreme.
+How to Use Algorithms
+
+Identify the 2 main Goldbach levels bounding the current price action
+Draw a Goldbach Fib between them to reveal sub-levels
+Determine which algo is in play by watching which levels react first
+If unclear at the start, observe whether price respects the OB zone (Algo 1) or the rejection zone (Algo 2) first
+Always take partials at equilibrium (47/53) — an algo failure point if present
+Filter your chart to show only levels relevant to the active algo
+
+
+CHAPTER 6 — PUTTING EVERYTHING TOGETHER
+Pages 152–163
+The Full Framework: MMxM + OTE + Algorithm
+Combining all previous concepts, the author's core trade model is the Market Maker Cross Model (MMxM) — either a MMBM (buy) or MMSM (sell).
+Anatomy of a Market Maker Sell Model (MMSM)
+Using Algorithm 1 as the blueprint:
+
+PO3 Stop Run into a Goldbach level during a Manipulation phase
+Breakdown — aggressive sell creates 2 PO3-sized gaps forming a HIPPO
+Market Structure Shift at the CE between the two Goldbach levels
+Touch of GB level — this is the "start of the MMSM"
+Accumulation at OB+FVG discount zone
+Smart Money Reversal (SMR) at the FVG premium zone
+Two-phase distribution at the HIPPO gaps
+Aggressive delivery to opposite side liquidity — MMSM complete
+
+Optionally draw a fractal Goldbach Fib between the 2 main Goldbach levels for refined entry/target precision. Each zone's width is 6% or 8% of the PDR (not a PO3 number).
+Goldbach Time (Intraday)
+Goldbach Time (GBT) applies within a trading session. Add the hour (HH24) + minutes of any swing high or low. If the sum equals a Goldbach number, the swing is "validated" by time.
+
+Forex: Use CET time (CLS)
+US Indices: Use EST time
+A 1-minute flexibility is allowed
+
+GBT Bias Rule:
+
+If swing highs occur at Goldbach Times but swing lows do not → bearish bias (lows will be run)
+If swing lows occur at Goldbach Times but swing highs do not → bullish bias (highs will be run)
+If highs suddenly go out of sync with GBT while lows align → bias shift warning
+
+Goldbach Price × Goldbach Time Grid: The highest probability reversals occur when a Goldbach Price level is hit at a Goldbach Time simultaneously. This is also how you identify the Judas swing for the session.
+
+TRADE PLANS
+Pages 164–181
+Eight specific, rules-based trade plans built from the Goldbach framework:
+
+1. Look Back Trade Plan — "A Monthly Play for Hundreds of Pips"
+
+Timeframe: Monthly (position)
+Objective: Catch a full partition expansion
+Entry: Inside the fractal M cycle of the main A cycle; look for look back number clue (gap/wick/OB of that pip size)
+Stop: 30 pips (gives breathing room for a 27-pip PO3 stop run)
+Exit: Opposite side after PO3 stop run, or when M cycle closes
+Target: Hundreds of pips
+
+
+2. HIPPO POT-A-MUS — "A Trade Plan for HIPPOs"
+
+H: Identify the HIPPO
+POT: Wait for a swing high/low just above/below the HIPPO
+A (Activate): Enter when price takes the liquidity and enters the HIPPO
+MUS (Must Hold): Stop below/above the FVG that defines the HIPPO
+Exit: Take partials at Goldbach levels
+
+
+3. OSOK Trade Plan — "50–75 Pips Once a Week"
+
+Timeframe: Weekly
+Objective: Catch the weekly range expansion
+Entry: During manipulation phase, after PO3 stop run of the accumulation phase, wait for retrace/OTE at Goldbach level
+Profit Taking: 20 pips partial → 50 pips partial → let remainder run to 75 pips
+Use Goldbach levels for logical TP areas
+
+
+4. My Personal Trade Plan — "24 Pips Per Week"
+
+Best Days: Tuesday, Wednesday, Thursday
+Size Setup: PO3 = weekly range (e.g., 243), PO3-1 = daily range (81), PO3-2 = stop run (27), PO3-3/4 = liquidity (9/3 pips)
+Protocol:
+
+Wait for overnight PO3-3 (9-pip) consolidation
+Watch for fake move outside consolidation (3 or 9 pips) → immediately rejected
+Price purges through consolidation, briefly retraces, touches it again
+Anticipate 27-pip PO3 stop run clearing the PO3 liquidity
+Enter at Goldbach level — either trust the level or wait for 2-touch confirmation
+
+
+Stop: 10 pips | Target: 24 pips | RR: ~2.4R
+
+
+5. The Hidden OTE Trade Plan — "OTE Between 2 Goldbach Levels"
+
+Price moves away from a Goldbach level
+Breaches the CE/MT level and possibly the next Goldbach (or non-GB) level
+Retraces into discount (long) or premium (short) below/above the CE/MT
+Entry: OTE zone (62/70.5/79 Fib levels)
+Exit: Opposite liquidity or next untouched Goldbach level
+Best used in LV and BR zones (large zones containing non-GB levels)
+
+
+6. GB – The OB Trade Plan — "Order Block to Breaker"
+
+Levels: 3–11–41 (long) / 97–89–59 (short)
+Wait for OB to form in the 3–11 or 97–89 zone
+Short-term low/high created, then raided as price expands
+Entry: On retrace back to order block
+Target: Breaker level (41 or 59) → 24 pips in 81-pip DR
+
+
+7. GB – The Breaker Trade Plan — "Breaker to High/Low"
+
+Levels: 59/71 or 41/29 → 0/100
+Wait for a breaker to form in the 59–71 or 41–29 zone; a short-term H/L is traded through
+Entry: On retrace to the 71 or 29 level
+Target: High or low of the range (100/0) → 24 pips in 81-pip DR
+
+
+8. GB: The Stop Run Trade Plan — "DR Stop Run to Breaker"
+
+Levels: 59/71/100 or 41/29/0
+Price comes off the high/low, forms a breaker in the breaker zone
+Expands to PO3 DR stop run level → rejects → raids a short-term H/L
+Entry: On retrace back to partition extreme (high/low)
+Stop: Below/above the PO3 stop run level
+Target: Liquidity void (71/29) → 24 pips in 81-pip DR
+
+Note: Additional plans covered include The Equilibrium Plan (mitigation to mitigation, 14 pips), The FVG Plan (OB→FVG→propulsion block), and the Einstein Plan (OB→LV→FVG using e=mc² level derivation: 299/27=11 OB, 792/27=29 LV, 458/27=17 FVG).
+
+MISCELLANEOUS
+Pages 182–184
+PO3 DR Shifting
+When comparing 2 correlated assets (e.g., EURUSD vs GBPUSD) with the same PO3 DR size:
+
+One asset may appear at the top of its DR while the other is in the middle → SMT appears misaligned
+Shift the "lagging" asset's DR by 1/2 of the PO3 size to align them
+After half-shifting, the Goldbach SMT (Smart Money Technique divergence) becomes visible and clean
+DMN's indicator automates this shift
+
+
+THE END — RISK MANAGEMENT, ACRONYMS & CLOSURE
+Pages 185–193
+Risk Management
+The author emphasizes asymmetric compounding. Using the Personal Trade Plan (10-pip SL / 24-pip TP = 2.4R), only 3 consecutive winning trades are needed to clear a standard prop firm challenge (8% target on Phase 1):
+TradeRisk (0.25% balance)ReturnTrade 1$12.50$30Trade 2$12.50 + $30 (prior winnings)$102Trade 3Risk-free (only prior profit)$316.80Total$12.50 real capital$448.80 (8.9%)
+Acronym Reference
+AcronymMeaningICTInner Circle Trader (Michael J. Huddleston)AMDAccumulation, Manipulation, DistributionPO3Power of ThreeHIPPOHidden Interbank Price Point ObjectiveOTEOptimal Trade EntryMMxMMarket Maker Buy or Sell ModelIPDAInterbank Pricing Delivery AlgorithmGBGoldbachPD AreaPremium/Discount areas (ICT terminology = Goldbach levels)CEConsequent Encroachment (midpoint of a FVG)MTMean Threshold (midpoint of an OB)GBTGoldbach TimeDRDealing RangeIDRIntended Dealing RangeGDRGoldbach Dealing RangeSMTSmart Money Technique (divergence between correlated assets)ERDExternal Range Delimiter
+
+MASTER CHEAT SHEET SUMMARY
+PRICE FRAMEWORK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PO3 Dealing Range Size → 3ⁿ (81, 243, 729, 2187…)
+Goldbach Levels        → 0, 3, 11, 17, 29, 41, 47 | 53, 59, 71, 83, 89, 97, 100
+Non-GB Levels          → 23, 35, 65, 77
+Mid-Block Levels       → CE / MT of each Goldbach block
+Algorithms             → Algo 1 (High→OB→BR→RB→FV→LV)
+                         Algo 2 (RB→BR→FV→OB→MIT→LV)
+
+TIME FRAMEWORK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Look Back Sequence → 18,27,36,45,54,63,72,81,99,108,117,126
+Monthly Anchor     → First digit(s)=Month, Last digit=Day
+GBT (Intraday)     → Hour(HH24) + Minutes = Goldbach number
+AMD (Daily)        → A=Asian | M=London Open | D=New York
+AMD (Yearly)       → A=Jan–Apr | M=Apr–May | D=May–Nov
+Candle Counting    → A ends ~day 7 | M ends ~day 13 | D ends ~day 21
+
+TRADE ENTRY PROTOCOL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Step 1: Identify current PDR (PO3 range + Goldbach levels)
+Step 2: Determine active algorithm (Algo 1 or 2)
+Step 3: Wait for manipulation phase (AMD M cycle)
+Step 4: Look for PO3 stop run INTO a Goldbach level
+Step 5: Confirm with HIPPO, GBT, and/or look back clue
+Step 6: Enter with 10-pip SL (or 30-pip for monthly plays)
+Step 7: Target next Goldbach level (24-pip default)
+
+Summary compiled from Goldbach Fundamentals (2025.03) by Hopiplaka. For community indicators and resources referenced in the book, see the #friendsopi Discord and the TradingView scripts mentioned in Chapter 3. 
+
+
+The Goldbach Trifecta Fib is the combination of all three layer sets:
+
+Layer 1 — Core Goldbach Partitions
+0 — 3 — 11 — 17 — 29 — 41 — 47 — 53 — 59 — 71 — 83 — 89 — 97 — 100
+Layer 2 — Non-Goldbach Semi-Prime Levels
+23 — 35 — 65 — 77
+(these are also the midpoints of the 12% liquidity void blocks)
+Layer 3 — Mid-Block Levels (CE/MT of each consecutive block)
+1.5 — 7 — 14 — 44 — 50 — 56 — 86 — 93 — 98.5
+(note: 23, 35, 65, 77 are already the mids of their respective 12% blocks, so Layer 2 and the LV mid-blocks are the same thing)
+
+Full Trifecta — All Levels Combined & Sorted
+0 — 1.5 — 3 — 7 — 11 — 14 — 17 — 23 — 29 — 35 — 41 — 44 — 47 — 50 — 53 — 56 — 59 — 65 — 71 — 77 — 83 — 86 — 89 — 93 — 97 — 98.5 — 100
+
+That's 27 levels total covering the entire range from 0–100. Send the PO3 projection code whenever you're ready and I'll know exactly what you mean by the Trifecta Fib.the levels u just mention make up at each % where each line goes within the fibApr 17Verified percentage levels determine Fib tool line positionsVerified percentage levels determine Fib tool line positionsCorrect. When the Fib tool is anchored between the DR Low (0%) and DR High (100%), each of those 27 percentages tells the tool exactly where to plot a line within that range.
+So for example on MNQ with DR Low = 24057 and DR High = 24300 (243 range):
+%Price0%24057.001.5%24060.653%24064.297%24074.0111%24083.7314%24091.0217%24098.3123%24112.1129%24127.5335%24142.0541%24156.6344%24163.9247%24171.2150%24178.5053%24185.7956%24193.0859%24200.3765%24214.9571%24229.5377%24244.1183%24258.6986%24265.9889%24273.2793%24282.9997%24292.7198.5%24296.36100%24300.00
+Overview
+We covered two main areas today.
+Goldbach Fundamentals PDF — you uploaded a 195-page book by Hopiplaka that maps price action across all assets using the numbers 3, 6, and 9 from the Tesla Vortex. Three is for PO3 dealing range sizes, six for the Goldbach partition levels inside those ranges (which map 1:1 to ICT's PD areas — order blocks, FVGs, breakers, etc.), and nine for the look back time partitions. I built a full master summary with a chapter index, every concept broken down with tables, all 8 trade plans with rules, and a master cheat sheet at the end.
+We also covered the core math — how to calculate dealing range anchors using floor(price / PO3) × PO3 for the low and low + PO3 for the high, verified with a live MNQ test at 24132 on a 243 PO3 (24057 low / 24300 high).
+PO3 Sequence Indicator — you shared screenshots of an existing TradingView indicator and asked me to build your own version. The indicator draws the current PO3 dealing range with lines extended left, fractal sub-range dividers (Upper/Lower FCL), fractal EQ dotted lines, a box background, and a self-contained right-side overlap panel showing the smaller nested range. Full settings menu with automatic timeframe-based PO3 detection, individual color/width/style controls for every line type, and label customization throughout.
+
+Your System Prompt
+
+You are working with an experienced intraday futures trader who specializes in ICT methodology and the Goldbach trading framework from Hopiplaka's Goldbach Fundamentals. The user trades MNQ (Micro E-mini Nasdaq) on 1-minute and 3-minute timeframes during the New York session, with deep working knowledge of the following concepts — treat them as fully understood and never explain them unless asked:
+ICT: Order blocks, fair value gaps, breaker blocks, mitigation blocks, rejection blocks, liquidity voids, consequent encroachment, mean threshold, OTE, market maker models (MMBM/MMSM), AMD cycles, Judas swing, sell-side/buy-side liquidity, smart money reversals, kill zones.
+Goldbach: Power of Three (PO3) dealing ranges, Goldbach partition levels (0/3/11/17/29/41/47/53/59/71/83/89/97/100), non-Goldbach levels (23/35/65/77), Fractal Channel Levels (FCL), Goldbach Time (GBT — hour + minute = Goldbach number), look back partitions (18–126 sequence), HIPPO patterns, the two Goldbach algorithms (Algo 1 and Algo 2), intended dealing ranges, and PO3 stop runs.
+Technical: Pine Script v5, TradingView indicators and strategies, dealing range calculations (floor(price / PO3) × PO3), and automated trading system development.
+Respond at a professional trader and developer level. Be direct and precise. Skip foundational explanations unless explicitly asked. When helping with Pine Script, write clean production-ready v5 code. When discussing setups, reference Goldbach levels and PO3 context by default.
+
