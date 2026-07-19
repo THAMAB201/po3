@@ -1,0 +1,35 @@
+name: Patch Enigma Foundation V4
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  patch:
+    if: github.event.issue.title == 'PATCH ENIGMA FOUNDATION V4'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out package branch
+        uses: actions/checkout@v4
+        with:
+          ref: enigma-professional-package
+
+      - name: Apply structural foundation patch
+        run: python PO3_MMXM_Enigma/.build/patch_foundation_v4.py
+
+      - name: Commit updated engine and strategy
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PO3_MMXM_Enigma/PO3_MMXM_Enigma_Execution_Engine.pine PO3_MMXM_Enigma/PO3_MMXM_Enigma_Strategy.pine
+          git commit -m "Execute OB-retest IMB setups across catalog states"
+          git push origin HEAD:enigma-professional-package
+
+      - name: Close trigger issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue close "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --comment "Foundation v4 patch completed."
