@@ -1,0 +1,500 @@
+    if macro950WindowActive and macro950OppositeRetestPending and not na(macro950AuthorityBar) and bar_index > macro950AuthorityBar
+        bool macro950PendingRetest = low <= macro950Top and high >= macro950Bottom
+        bool macro950PendingOutsideClose = macro950AuthorityDirection == 1 ? close > macro950Top : close < macro950Bottom
+        if macro950PendingRetest and macro950PendingOutsideClose
+            macro950AuthorityRetestConfirmed := true
+            macro950OppositeRetestPending := false
+            macro950SignalNow := macro950CanExecuteNow
+            macro950SignalDirection := macro950AuthorityDirection
+            macro950SignalWasRetest := true
+            macro950AuthorityBar := bar_index
+
+    if macro950WindowActive and macro950InitialSignalUsed and not na(macro950AuthorityBar) and bar_index > macro950AuthorityBar
+        int macro950EconomicDirection = recordedTradeOpen ? recordedTradeDirection : positionDirection()
+        bool macro950ZoneRetest = low <= macro950Top and high >= macro950Bottom
+        bool macro950OriginalAcceptanceClose = macro950Direction == 1 ? close > macro950Top : close < macro950Bottom
+        bool macro950OriginalFailureClose = macro950Direction == 1 ? close < macro950Bottom : close > macro950Top
+        if macro950AuthorityDirection == macro950Direction and macro950OriginalFailureClose
+            macro950AuthorityDirection := -macro950Direction
+            macro950AuthorityRetestConfirmed := false
+            macro950OppositeRetestPending := true
+            macro950SignalNow := false
+            macro950SignalDirection := macro950AuthorityDirection
+            macro950SignalWasRetest := false
+            macro950AuthorityBar := bar_index
+            macro950AcceptanceConfirmed := false
+            macro950AcceptanceBar := na
+            delayedFpiReversal := false
+        else if macro950AuthorityDirection == macro950Direction and macro950OriginalAcceptanceClose and macro950EconomicDirection != macro950AuthorityDirection
+            // The FPI was already validated by a later retest before 10:00. A flat
+            // strategy may execute that stored authority once fresh entries open.
+            macro950SignalNow := macro950CanExecuteNow
+            macro950SignalDirection := macro950AuthorityDirection
+            macro950SignalWasRetest := true
+            macro950AuthorityBar := bar_index
+        else if macro950AuthorityDirection == -macro950Direction
+            if macro950OriginalAcceptanceClose and not macro950AcceptanceConfirmed
+                macro950AcceptanceConfirmed := true
+                macro950AcceptanceBar := bar_index
+            else if macro950AcceptanceConfirmed and not na(macro950AcceptanceBar) and bar_index > macro950AcceptanceBar and macro950ZoneRetest and macro950OriginalAcceptanceClose
+                macro950AuthorityDirection := macro950Direction
+                macro950AuthorityRetestConfirmed := true
+                macro950OppositeRetestPending := false
+                macro950SignalNow := macro950CanExecuteNow
+                macro950SignalDirection := macro950Direction
+                macro950SignalWasRetest := true
+                macro950AuthorityBar := bar_index
+                macro950AcceptanceConfirmed := false
+                macro950AcceptanceBar := na
+                delayedFpiReversal := false
+            else if macro950OriginalFailureClose and macro950EconomicDirection != macro950AuthorityDirection
+                macro950SignalNow := macro950CanExecuteNow
+                macro950SignalDirection := macro950AuthorityDirection
+                macro950SignalWasRetest := false
+                macro950AuthorityBar := bar_index
+        if macro950SignalNow and not na(macro950Box)
+            box.set_border_width(macro950Box, 3)
+            box.set_border_color(macro950Box, fpiBorderColor(macro950SignalDirection))
+
+    // Phase-extreme order-block engine. A consecutive candle run is one zone. The
+    // lowest bullish / highest bearish candidate may remain active across a 30-minute
+    // divider. It must break away, then receive a later retest and outside close.
+    bool orderBlockSignalNow = false
+    int orderBlockSignalDirection = 0
+    float orderBlockSignalTop = na
+    float orderBlockSignalBottom = na
+    int orderBlockSignalSourceBar = na
+    box orderBlockSignalBox = na
+
+    if cfg.enableBot and isOneMinute and inSession and barstate.isconfirmed
+        bool downCloseCandle = close < open
+        bool upCloseCandle = close > open
+
+        if downCloseCandle
+            if not bullishObRunActive
+                bullishObRunActive := true
+                bullishObRunTop := high
+                bullishObRunBottom := low
+                bullishObRunStartTime := time
+            else
+                bullishObRunTop := math.max(bullishObRunTop, high)
+                bullishObRunBottom := math.min(bullishObRunBottom, low)
+            bullishObRunEndBar := bar_index
+        else if bullishObRunActive
+            bool replaceBullishCandidate = not bullishObCandidateFound or na(bullishObCandidateBottom) or bullishObRunBottom < bullishObCandidateBottom
+            if replaceBullishCandidate
+                bullishObCandidateFound := true
+                bullishObCandidateTop := bullishObRunTop
+                bullishObCandidateBottom := bullishObRunBottom
+                bullishObCandidateStartTime := bullishObRunStartTime
+                bullishObCandidateEndBar := bullishObRunEndBar
+                bullishObBreakConfirmed := false
+                bullishObBreakBar := na
+                bullishObCandidateUsed := false
+            bullishObRunActive := false
+            bullishObRunTop := na
+            bullishObRunBottom := na
+            bullishObRunStartTime := na
+            bullishObRunEndBar := na
+
+        if upCloseCandle
+            if not bearishObRunActive
+                bearishObRunActive := true
+                bearishObRunTop := high
+                bearishObRunBottom := low
+                bearishObRunStartTime := time
+            else
+                bearishObRunTop := math.max(bearishObRunTop, high)
+                bearishObRunBottom := math.min(bearishObRunBottom, low)
+            bearishObRunEndBar := bar_index
+        else if bearishObRunActive
+            bool replaceBearishCandidate = not bearishObCandidateFound or na(bearishObCandidateTop) or bearishObRunTop > bearishObCandidateTop
+            if replaceBearishCandidate
+                bearishObCandidateFound := true
+                bearishObCandidateTop := bearishObRunTop
+                bearishObCandidateBottom := bearishObRunBottom
+                bearishObCandidateStartTime := bearishObRunStartTime
+                bearishObCandidateEndBar := bearishObRunEndBar
+                bearishObBreakConfirmed := false
+                bearishObBreakBar := na
+                bearishObCandidateUsed := false
+            bearishObRunActive := false
+            bearishObRunTop := na
+            bearishObRunBottom := na
+            bearishObRunStartTime := na
+            bearishObRunEndBar := na
+
+        if currentWindow >= 0 and bullishObCandidateFound and not na(bullishObCandidateEndBar) and bar_index > bullishObCandidateEndBar
+            bool bullishObCloseDisrespect = close < bullishObCandidateBottom
+            if bullishObCloseDisrespect
+                bullishObCandidateFound := false
+                bullishObBreakConfirmed := false
+            else if not bullishObCandidateUsed
+                if not bullishObBreakConfirmed and close > bullishObCandidateTop
+                    bullishObBreakConfirmed := true
+                    bullishObBreakBar := bar_index
+                else if bullishObBreakConfirmed and not na(bullishObBreakBar) and bar_index > bullishObBreakBar
+                    bool bullishObRetest = low <= bullishObCandidateTop and high >= bullishObCandidateBottom
+                    if bullishObRetest and close > bullishObCandidateTop
+                        bullishObCandidateUsed := true
+                        orderBlockSignalNow := true
+                        orderBlockSignalDirection := 1
+                        orderBlockSignalTop := bullishObCandidateTop
+                        orderBlockSignalBottom := bullishObCandidateBottom
+                        orderBlockSignalSourceBar := bullishObCandidateEndBar
+
+        if currentWindow >= 0 and bearishObCandidateFound and not na(bearishObCandidateEndBar) and bar_index > bearishObCandidateEndBar
+            bool bearishObCloseDisrespect = close > bearishObCandidateTop
+            if bearishObCloseDisrespect
+                bearishObCandidateFound := false
+                bearishObBreakConfirmed := false
+            else if not bearishObCandidateUsed
+                if not bearishObBreakConfirmed and close < bearishObCandidateBottom
+                    bearishObBreakConfirmed := true
+                    bearishObBreakBar := bar_index
+                else if bearishObBreakConfirmed and not na(bearishObBreakBar) and bar_index > bearishObBreakBar
+                    bool bearishObRetest = high >= bearishObCandidateBottom and low <= bearishObCandidateTop
+                    if bearishObRetest and close < bearishObCandidateBottom
+                        bearishObCandidateUsed := true
+                        orderBlockSignalNow := true
+                        orderBlockSignalDirection := -1
+                        orderBlockSignalTop := bearishObCandidateTop
+                        orderBlockSignalBottom := bearishObCandidateBottom
+                        orderBlockSignalSourceBar := bearishObCandidateEndBar
+
+    if orderBlockSignalNow
+        if drawStructureVisuals
+            int orderBlockLeftTime = orderBlockSignalDirection == 1 ? bullishObCandidateStartTime : bearishObCandidateStartTime
+            orderBlockSignalBox := structureBox(orderBlockLeftTime, orderBlockSignalTop, minuteTimestamp(periodEndMinute(currentWindow)), orderBlockSignalBottom, orderBlockSignalDirection, cfg.fpiBoxTransparency, drawStructureTags ? (orderBlockSignalDirection == 1 ? "BULLISH OB" : "BEARISH OB") : "")
+
+    // Untested-FPI BGOB lifecycle, independently retained for every exact 30-minute period:
+    //   formation = selected FPI's third candle full range,
+    //   break = a later close beyond that candle in the FPI direction while its near edge holds,
+    //   retest = a still-later overlap plus bullish close above the high / bearish close below the low.
+    // A wick beyond the far edge invalidates the BGOB before it can signal. Each BGOB is one-shot.
+    bool bgobSignalNow = false
+    int bgobSignalDirection = 0
+    float bgobSignalTop = na
+    float bgobSignalBottom = na
+    int bgobSignalWindow = -1
+    int bgobSignalFormationBar = na
+
+    // Discover every imbalance while retaining the phase extreme through 30-minute
+    // dividers. The lowest bullish / highest bearish imbalance is the structural
+    // candidate. It must break away, then receive a later overlap and outside close.
+    if cfg.enableBot and isOneMinute and inSession and barstate.isconfirmed
+        int intervalImbalanceDirection = fpiDirection()
+        if middleWindow == currentWindow and intervalImbalanceDirection != 0
+            float intervalImbalanceTop = fpiTop()
+            float intervalImbalanceBottom = fpiBottom()
+            if intervalImbalanceDirection == 1
+                bool replaceBullishImbalance = not bullishImbCandidateFound or intervalImbalanceBottom < bullishImbCandidateBottom
+                if replaceBullishImbalance
+                    bullishImbCandidateFound := true
+                    bullishImbCandidateTop := intervalImbalanceTop
+                    bullishImbCandidateBottom := intervalImbalanceBottom
+                    bullishImbFormationBar := bar_index
+                    bullishImbStartTime := time[2]
+                    bullishImbBreakConfirmed := false
+                    bullishImbBreakBar := na
+                    bullishImbCandidateUsed := false
+            else
+                bool replaceBearishImbalance = not bearishImbCandidateFound or intervalImbalanceTop > bearishImbCandidateTop
+                if replaceBearishImbalance
+                    bearishImbCandidateFound := true
+                    bearishImbCandidateTop := intervalImbalanceTop
+                    bearishImbCandidateBottom := intervalImbalanceBottom
+                    bearishImbFormationBar := bar_index
+                    bearishImbStartTime := time[2]
+                    bearishImbBreakConfirmed := false
+                    bearishImbBreakBar := na
+                    bearishImbCandidateUsed := false
+
+            if cfg.allowOpposingImbFoundationPair
+                if intervalImbalanceDirection == -1
+                    bool replaceLowerBearImb = not bullPairBearImbFound or na(bullPairBearImbBottom) or intervalImbalanceBottom < bullPairBearImbBottom
+                    if replaceLowerBearImb
+                        bullPairBearImbFound := true
+                        bullPairBearImbTop := intervalImbalanceTop
+                        bullPairBearImbBottom := intervalImbalanceBottom
+                        bullPairBearImbFormationBar := bar_index
+                        bullPairBearImbStartTime := time[2]
+                        bullPairBearImbWindow := currentWindow
+                        bullPairBearImbReclaimConfirmed := false
+                        bullPairBearImbReclaimBar := na
+                        bullPairBearImbUsed := false
+                else if intervalImbalanceDirection == 1
+                    bool replaceHigherBullImb = not bearPairBullImbFound or na(bearPairBullImbTop) or intervalImbalanceTop > bearPairBullImbTop
+                    if replaceHigherBullImb
+                        bearPairBullImbFound := true
+                        bearPairBullImbTop := intervalImbalanceTop
+                        bearPairBullImbBottom := intervalImbalanceBottom
+                        bearPairBullImbFormationBar := bar_index
+                        bearPairBullImbStartTime := time[2]
+                        bearPairBullImbWindow := currentWindow
+                        bearPairBullImbReclaimConfirmed := false
+                        bearPairBullImbReclaimBar := na
+                        bearPairBullImbUsed := false
+
+        if bullishImbCandidateFound and not bullishImbCandidateUsed and bar_index > bullishImbFormationBar
+            if close < bullishImbCandidateBottom
+                bullishImbCandidateFound := false
+            else if not bullishImbBreakConfirmed and close > bullishImbCandidateTop
+                bullishImbBreakConfirmed := true
+                bullishImbBreakBar := bar_index
+            else if bullishImbBreakConfirmed and bar_index > bullishImbBreakBar
+                bool bullishImbalanceRetest = low <= bullishImbCandidateTop and high >= bullishImbCandidateBottom
+                if bullishImbalanceRetest and close > bullishImbCandidateTop
+                    bullishImbCandidateUsed := true
+                    bgobSignalNow := true
+                    bgobSignalDirection := 1
+                    bgobSignalTop := bullishImbCandidateTop
+                    bgobSignalBottom := bullishImbCandidateBottom
+                    bgobSignalWindow := currentWindow
+                    bgobSignalFormationBar := bullishImbFormationBar
+                    if drawStructureVisuals
+                        structureBox(bullishImbStartTime, bullishImbCandidateTop, minuteTimestamp(periodEndMinute(currentWindow)), bullishImbCandidateBottom, 1, cfg.fpiBoxTransparency, drawStructureTags ? "BULLISH IMB" : "")
+
+        if bearishImbCandidateFound and not bearishImbCandidateUsed and bar_index > bearishImbFormationBar
+            if close > bearishImbCandidateTop
+                bearishImbCandidateFound := false
+            else if not bearishImbBreakConfirmed and close < bearishImbCandidateBottom
+                bearishImbBreakConfirmed := true
+                bearishImbBreakBar := bar_index
+            else if bearishImbBreakConfirmed and bar_index > bearishImbBreakBar
+                bool bearishImbalanceRetest = high >= bearishImbCandidateBottom and low <= bearishImbCandidateTop
+                if bearishImbalanceRetest and close < bearishImbCandidateBottom
+                    bearishImbCandidateUsed := true
+                    bgobSignalNow := true
+                    bgobSignalDirection := -1
+                    bgobSignalTop := bearishImbCandidateTop
+                    bgobSignalBottom := bearishImbCandidateBottom
+                    bgobSignalWindow := currentWindow
+                    bgobSignalFormationBar := bearishImbFormationBar
+                    if drawStructureVisuals
+                        structureBox(bearishImbStartTime, bearishImbCandidateTop, minuteTimestamp(periodEndMinute(currentWindow)), bearishImbCandidateBottom, -1, cfg.fpiBoxTransparency, drawStructureTags ? "BEARISH IMB" : "")
+
+    // Opposing IMB reversal component. This is not a direct trade and is not BGOB.
+    // It is one half of an OB + IMB sequence. The second completed component triggers.
+    bool bullOpposingImbSignalNow = false
+    float bullOpposingImbTop = na
+    float bullOpposingImbBottom = na
+    int bullOpposingImbWindow = -1
+    bool bearOpposingImbSignalNow = false
+    float bearOpposingImbTop = na
+    float bearOpposingImbBottom = na
+    int bearOpposingImbWindow = -1
+
+    if cfg.allowOpposingImbFoundationPair and cfg.enableBot and isOneMinute and inSession and barstate.isconfirmed
+        if bullPairBearImbFound and not bullPairBearImbUsed and not na(bullPairBearImbFormationBar) and bar_index > bullPairBearImbFormationBar
+            if not bullPairBearImbReclaimConfirmed
+                if close > bullPairBearImbTop
+                    bullPairBearImbReclaimConfirmed := true
+                    bullPairBearImbReclaimBar := bar_index
+            else
+                if close < bullPairBearImbBottom
+                    bullPairBearImbReclaimConfirmed := false
+                    bullPairBearImbReclaimBar := na
+                else if not na(bullPairBearImbReclaimBar) and bar_index > bullPairBearImbReclaimBar
+                    bool bullPairRetest = low <= bullPairBearImbTop and high >= bullPairBearImbBottom
+                    if bullPairRetest and close > bullPairBearImbTop
+                        bullPairBearImbUsed := true
+                        bullOpposingImbSignalNow := true
+                        bullOpposingImbTop := bullPairBearImbTop
+                        bullOpposingImbBottom := bullPairBearImbBottom
+                        bullOpposingImbWindow := bullPairBearImbWindow
+                        int bullPairStoreWindow = currentWindow >= 0 ? currentWindow : bullPairBearImbWindow
+                        if bullPairStoreWindow >= 0
+                            array.set(intervalBullOpposingImbValidated, bullPairStoreWindow, true)
+                        if drawStructureVisuals
+                            structureBox(bullPairBearImbStartTime, bullPairBearImbTop, minuteTimestamp(periodEndMinute(currentWindow)), bullPairBearImbBottom, -1, cfg.fpiBoxTransparency, drawStructureTags ? "BEARISH IMB PAIR" : "")
+
+        if bearPairBullImbFound and not bearPairBullImbUsed and not na(bearPairBullImbFormationBar) and bar_index > bearPairBullImbFormationBar
+            if not bearPairBullImbReclaimConfirmed
+                if close < bearPairBullImbBottom
+                    bearPairBullImbReclaimConfirmed := true
+                    bearPairBullImbReclaimBar := bar_index
+            else
+                if close > bearPairBullImbTop
+                    bearPairBullImbReclaimConfirmed := false
+                    bearPairBullImbReclaimBar := na
+                else if not na(bearPairBullImbReclaimBar) and bar_index > bearPairBullImbReclaimBar
+                    bool bearPairRetest = high >= bearPairBullImbBottom and low <= bearPairBullImbTop
+                    if bearPairRetest and close < bearPairBullImbBottom
+                        bearPairBullImbUsed := true
+                        bearOpposingImbSignalNow := true
+                        bearOpposingImbTop := bearPairBullImbTop
+                        bearOpposingImbBottom := bearPairBullImbBottom
+                        bearOpposingImbWindow := bearPairBullImbWindow
+                        int bearPairStoreWindow = currentWindow >= 0 ? currentWindow : bearPairBullImbWindow
+                        if bearPairStoreWindow >= 0
+                            array.set(intervalBearOpposingImbValidated, bearPairStoreWindow, true)
+                        if drawStructureVisuals
+                            structureBox(bearPairBullImbStartTime, bearPairBullImbTop, minuteTimestamp(periodEndMinute(currentWindow)), bearPairBullImbBottom, 1, cfg.fpiBoxTransparency, drawStructureTags ? "BULLISH IMB PAIR" : "")
+
+    if cfg.enableBot and isOneMinute and inSession and barstate.isconfirmed
+        for candidateWindow = 0 to LAST_WINDOW_ID
+            bool candidateValid = array.get(bgobValidByWindow, candidateWindow)
+            bool candidateUsed = array.get(bgobUsedByWindow, candidateWindow)
+            int candidateDirection = array.get(bgobDirectionByWindow, candidateWindow)
+            float candidateTop = array.get(bgobTopByWindow, candidateWindow)
+            float candidateBottom = array.get(bgobBottomByWindow, candidateWindow)
+            int candidateFormationBar = array.get(bgobFormationBarByWindow, candidateWindow)
+            bool candidateBreakConfirmed = array.get(bgobBreakConfirmedByWindow, candidateWindow)
+            int candidateBreakBar = array.get(bgobBreakBarByWindow, candidateWindow)
+
+            if candidateWindow == currentWindow and candidateValid and not candidateUsed and candidateDirection != 0 and not na(candidateFormationBar) and bar_index > candidateFormationBar
+                bool tradedThroughFpiEdge = candidateDirection == 1 ? low < candidateBottom : high > candidateTop
+
+                if tradedThroughFpiEdge
+                    array.set(bgobValidByWindow, candidateWindow, false)
+                else if not candidateBreakConfirmed
+                    bool brokeAway = candidateDirection == 1 ? close > candidateTop : close < candidateBottom
+                    if brokeAway
+                        array.set(bgobBreakConfirmedByWindow, candidateWindow, true)
+                        array.set(bgobBreakBarByWindow, candidateWindow, bar_index)
+                else if not na(candidateBreakBar) and bar_index > candidateBreakBar
+                    bool retestedFullCandle = high >= candidateBottom and low <= candidateTop
+                    float candidateMidpoint = (candidateTop + candidateBottom) / 2.0
+                    bool penetratedBeyondMidpoint = candidateDirection == 1 ? low < candidateMidpoint : high > candidateMidpoint
+                    bool directionalOutsideClose = candidateDirection == 1 ? close > candidateTop and close > open : close < candidateBottom and close < open
+                    bool successfulRetest = retestedFullCandle and not penetratedBeyondMidpoint and directionalOutsideClose
+
+                    if retestedFullCandle and penetratedBeyondMidpoint
+                        array.set(bgobValidByWindow, candidateWindow, false)
+                    else if successfulRetest
+                        // Consume every simultaneous valid retest once. The most recent period
+                        // wins if an unusually large candle confirms more than one zone at once.
+                        array.set(bgobUsedByWindow, candidateWindow, true)
+                        array.set(bgobValidByWindow, candidateWindow, false)
+                        if candidateWindow >= bgobSignalWindow
+                            bgobSignalNow := true
+                            bgobSignalDirection := candidateDirection
+                            bgobSignalTop := candidateTop
+                            bgobSignalBottom := candidateBottom
+                            bgobSignalWindow := candidateWindow
+                            bgobSignalFormationBar := candidateFormationBar
+
+    // Component events used by the order-independent sequence engine.
+    bool bullishObComponentNow = orderBlockSignalNow and orderBlockSignalDirection == 1
+    bool bearishObComponentNow = orderBlockSignalNow and orderBlockSignalDirection == -1
+    bool bullishAlignedImbComponentNow = bgobSignalNow and bgobSignalDirection == 1
+    bool bearishAlignedImbComponentNow = bgobSignalNow and bgobSignalDirection == -1
+    bool bullishImbComponentNow = bullishAlignedImbComponentNow or bullOpposingImbSignalNow
+    bool bearishImbComponentNow = bearishAlignedImbComponentNow or bearOpposingImbSignalNow
+    float bullishImbComponentTop = bullOpposingImbSignalNow ? bullOpposingImbTop : bullishAlignedImbComponentNow ? bgobSignalTop : na
+    float bullishImbComponentBottom = bullOpposingImbSignalNow ? bullOpposingImbBottom : bullishAlignedImbComponentNow ? bgobSignalBottom : na
+    float bearishImbComponentTop = bearOpposingImbSignalNow ? bearOpposingImbTop : bearishAlignedImbComponentNow ? bgobSignalTop : na
+    float bearishImbComponentBottom = bearOpposingImbSignalNow ? bearOpposingImbBottom : bearishAlignedImbComponentNow ? bgobSignalBottom : na
+
+    // FPI bias and structural validation are separate state dimensions. A selected
+    // FPI supplies context; only a successful interval BGOB/order-block retest may
+    // place an order. Original-direction structure can restore the main narrative
+    // from below/above the FPI; opposing structure additionally requires a far-edge close.
+    bool intervalFoundationSignalNow = false
+    int intervalFoundationSignalDirection = 0
+    float intervalFoundationSignalTop = na
+    float intervalFoundationSignalBottom = na
+    int intervalFoundationSignalKind = SOURCE_NONE
+    if currentWindow >= 0 and array.get(selectedByWindow, currentWindow)
+        int intervalOriginalDirection = array.get(intervalFpiOriginalDirection, currentWindow)
+        float intervalSelectedTop = array.get(intervalFpiTop, currentWindow)
+        float intervalSelectedBottom = array.get(intervalFpiBottom, currentWindow)
+        bool intervalWasDisrespected = array.get(intervalFpiDisrespected, currentWindow)
+        bool intervalFailureClose = intervalOriginalDirection == 1 ? close < intervalSelectedBottom : close > intervalSelectedTop
+
+        if intervalFailureClose
+            array.set(intervalFpiDisrespected, currentWindow, true)
+
+        if orderBlockSignalNow
+            if orderBlockSignalDirection == 1
+                array.set(intervalBullStructureValidated, currentWindow, true)
+                array.set(intervalBullObValidated, currentWindow, true)
+                array.set(intervalBullStructureTop, currentWindow, orderBlockSignalTop)
+                array.set(intervalBullStructureBottom, currentWindow, orderBlockSignalBottom)
+                array.set(intervalBullStructureKind, currentWindow, SOURCE_ORDER_BLOCK)
+            else
+                array.set(intervalBearStructureValidated, currentWindow, true)
+                array.set(intervalBearObValidated, currentWindow, true)
+                array.set(intervalBearStructureTop, currentWindow, orderBlockSignalTop)
+                array.set(intervalBearStructureBottom, currentWindow, orderBlockSignalBottom)
+                array.set(intervalBearStructureKind, currentWindow, SOURCE_ORDER_BLOCK)
+
+        if bgobSignalNow and bgobSignalWindow == currentWindow
+            if bgobSignalDirection == 1
+                array.set(intervalBullStructureValidated, currentWindow, true)
+                array.set(intervalBullImbValidated, currentWindow, true)
+                array.set(intervalBullStructureTop, currentWindow, bgobSignalTop)
+                array.set(intervalBullStructureBottom, currentWindow, bgobSignalBottom)
+                array.set(intervalBullStructureKind, currentWindow, SOURCE_BGOB)
+            else
+                array.set(intervalBearStructureValidated, currentWindow, true)
+                array.set(intervalBearImbValidated, currentWindow, true)
+                array.set(intervalBearStructureTop, currentWindow, bgobSignalTop)
+                array.set(intervalBearStructureBottom, currentWindow, bgobSignalBottom)
+                array.set(intervalBearStructureKind, currentWindow, SOURCE_BGOB)
+
+        // Opposite-current-FPI structures are reserved for the sequence engine below.
+        bool bullishSequenceContext = cfg.enableSequenceEngine and intervalOriginalDirection == -1
+        bool bearishSequenceContext = cfg.enableSequenceEngine and intervalOriginalDirection == 1
+
+        bool intervalIsDisrespected = array.get(intervalFpiDisrespected, currentWindow)
+        bool rawStructureSignal = orderBlockSignalNow or bgobSignalNow
+        int rawStructureDirection = orderBlockSignalNow ? orderBlockSignalDirection : bgobSignalDirection
+        bool returnedToPreviousSessionFpi = false
+        for previousWindow = phaseStartWindow(activeNyPhase) to LAST_WINDOW_ID
+            if previousWindow < currentWindow and array.get(selectedByWindow, previousWindow)
+                float previousTop = array.get(intervalFpiTop, previousWindow)
+                float previousBottom = array.get(intervalFpiBottom, previousWindow)
+                if not na(previousTop) and not na(previousBottom) and low <= previousTop and high >= previousBottom
+                    returnedToPreviousSessionFpi := true
+
+        bool newSessionHighBreakout = not na(sessionExtremeHigh) and close > sessionExtremeHigh
+        bool newSessionLowBreakout = not na(sessionExtremeLow) and close < sessionExtremeLow
+        bool bullishFpiStateAllows = reversalModeActive ? reversalModeDirection == 1 and intervalOriginalDirection == 1 : intervalOriginalDirection == 1 or (intervalIsDisrespected and intervalOriginalDirection == -1)
+        bool bearishFpiStateAllows = reversalModeActive ? reversalModeDirection == -1 and intervalOriginalDirection == -1 : intervalOriginalDirection == -1 or (intervalIsDisrespected and intervalOriginalDirection == 1)
+        bool bullishCounterControllerSetup = sessionAnchorFpiFound and sessionAnchorDirection == -1
+        bool bearishCounterControllerSetup = sessionAnchorFpiFound and sessionAnchorDirection == 1
+        bool bullishStructurePairReady = array.get(intervalBullObValidated, currentWindow) and array.get(intervalBullImbValidated, currentWindow)
+        bool bearishStructurePairReady = array.get(intervalBearObValidated, currentWindow) and array.get(intervalBearImbValidated, currentWindow)
+        bool bullishFoundationReady = array.get(intervalBullStructureValidated, currentWindow) and (not bullishCounterControllerSetup or bullishStructurePairReady)
+        bool bearishFoundationReady = array.get(intervalBearStructureValidated, currentWindow) and (not bearishCounterControllerSetup or bearishStructurePairReady)
+        bool bullishCounterSessionAuthorized = reversalModeActive and reversalModeDirection == 1 ? true : sessionAnchorDirection != -1 or returnedToPreviousSessionFpi or newSessionHighBreakout
+        bool bearishCounterSessionAuthorized = reversalModeActive and reversalModeDirection == -1 ? true : sessionAnchorDirection != 1 or returnedToPreviousSessionFpi or newSessionLowBreakout
+        bool bullishTriggerNow = bullishCounterControllerSetup ? rawStructureSignal and rawStructureDirection == 1 : reversalModeActive ? rawStructureSignal and rawStructureDirection == 1 : (rawStructureSignal and rawStructureDirection == 1) or (sessionAnchorDirection == -1 and (returnedToPreviousSessionFpi or newSessionHighBreakout))
+        bool bearishTriggerNow = bearishCounterControllerSetup ? rawStructureSignal and rawStructureDirection == -1 : reversalModeActive ? rawStructureSignal and rawStructureDirection == -1 : (rawStructureSignal and rawStructureDirection == -1) or (sessionAnchorDirection == 1 and (returnedToPreviousSessionFpi or newSessionLowBreakout))
+
+        if bullishFpiStateAllows and bullishFoundationReady and bullishCounterSessionAuthorized and bullishTriggerNow and not bullishSequenceContext and not array.get(intervalBullEntryUsed, currentWindow)
+            intervalFoundationSignalNow := true
+            intervalFoundationSignalDirection := 1
+            intervalFoundationSignalTop := array.get(intervalBullStructureTop, currentWindow)
+            intervalFoundationSignalBottom := array.get(intervalBullStructureBottom, currentWindow)
+            intervalFoundationSignalKind := array.get(intervalBullStructureKind, currentWindow)
+            array.set(intervalBullEntryUsed, currentWindow, true)
+        else if bearishFpiStateAllows and bearishFoundationReady and bearishCounterSessionAuthorized and bearishTriggerNow and not bearishSequenceContext and not array.get(intervalBearEntryUsed, currentWindow)
+            intervalFoundationSignalNow := true
+            intervalFoundationSignalDirection := -1
+            intervalFoundationSignalTop := array.get(intervalBearStructureTop, currentWindow)
+            intervalFoundationSignalBottom := array.get(intervalBearStructureBottom, currentWindow)
+            intervalFoundationSignalKind := array.get(intervalBearStructureKind, currentWindow)
+            array.set(intervalBearEntryUsed, currentWindow, true)
+
+        // Structure events that do not match the currently active FPI state cannot
+        // reach the order engine through intervalFoundationSignalNow. Their raw event
+        // remains available below so a validated session-aligned OB/BGOB can still be
+        // retained as confluence instead of being accidentally discarded.
+
+    // Find the most recent opposing interval FPI in the active NY phase. A pair may
+    // begin in one 30-minute window and complete in the next; the current window's FPI
+    // must not erase a valid earlier Judas/reversal sequence.
+    int latestBullAgainstFpiWindow = -1
+    int latestBearAgainstFpiWindow = -1
+    if currentWindow >= 0
+        int sequencePhaseStart = phaseStartWindow(activeNyPhase)
+        for sequenceWindow = sequencePhaseStart to currentWindow
+            if array.get(selectedByWindow, sequenceWindow)
+                int sequenceFpiDirection = array.get(intervalFpiOriginalDirection, sequenceWindow)
+                if sequenceFpiDirection == -1
+                    latestBullAgainstFpiWindow := sequenceWindow
+                else if sequenceFpiDirection == 1
+                    latestBearAgainstFpiWindow := sequenceWindow
