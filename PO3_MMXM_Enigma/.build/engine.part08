@@ -1,0 +1,500 @@
+                            array.set(intervalFpiPersistentAcceptanceBar, persistentFpiWindow, bar_index)
+                    else if not na(persistentAcceptanceBar) and bar_index > persistentAcceptanceBar and persistentPhysicalRetest and persistentAcceptanceClose
+                        array.set(intervalFpiRespected, persistentFpiWindow, true)
+                        array.set(intervalFpiDisrespected, persistentFpiWindow, false)
+
+    if cfg.enablePriorRespectedFpiReversal and recordedTradeOpen and strategy.position_size != 0 and isOneMinute and inSession and barstate.isconfirmed and not na(recordedEntryBar) and bar_index > recordedEntryBar and currentWindow > 0
+        int openTradeDirection = positionDirection()
+        int desiredReversalDirection = -openTradeDirection
+        int earliestPriorFpiWindow = activeNyPhase == SESSION_PHASE_PM ? phaseStartWindow(SESSION_PHASE_PM) : 0
+        float selectedExtremeBoundary = na
+        for priorFpiWindow = 0 to LAST_WINDOW_ID
+            bool isEarlierWindow = priorFpiWindow >= earliestPriorFpiWindow and priorFpiWindow < currentWindow
+            bool candidateAvailable = isEarlierWindow and array.get(selectedByWindow, priorFpiWindow) and array.get(intervalFpiRespected, priorFpiWindow) and not array.get(intervalFpiDisrespected, priorFpiWindow) and not array.get(intervalFpiReversalUsed, priorFpiWindow) and array.get(intervalFpiOriginalDirection, priorFpiWindow) == desiredReversalDirection
+            if candidateAvailable
+                float candidateTop = array.get(intervalFpiTop, priorFpiWindow)
+                float candidateBottom = array.get(intervalFpiBottom, priorFpiWindow)
+                float candidateBoundary = desiredReversalDirection == 1 ? candidateBottom : candidateTop
+                bool isMoreExtreme = na(selectedExtremeBoundary) or (desiredReversalDirection == 1 ? candidateBoundary < selectedExtremeBoundary : candidateBoundary > selectedExtremeBoundary)
+                if isMoreExtreme
+                    selectedExtremeBoundary := candidateBoundary
+                    priorRespectedFpiReversalWindow := priorFpiWindow
+                    priorRespectedFpiReversalTop := candidateTop
+                    priorRespectedFpiReversalBottom := candidateBottom
+
+        if priorRespectedFpiReversalWindow >= 0 and not na(priorRespectedFpiReversalTop) and not na(priorRespectedFpiReversalBottom)
+            bool priorFpiPhysicalRetest = low <= priorRespectedFpiReversalTop and high >= priorRespectedFpiReversalBottom
+            bool priorFpiDirectionalConfirm = (desiredReversalDirection == 1 ? close > priorRespectedFpiReversalTop : close < priorRespectedFpiReversalBottom) and (not cfg.requireDirectionalBodyForFpiFailure or directionalBodyFor(desiredReversalDirection))
+            if priorFpiPhysicalRetest and priorFpiDirectionalConfirm
+                priorRespectedFpiReversalSignalNow := true
+                priorRespectedFpiReversalDirection := desiredReversalDirection
+
+    // Resolve the one effective structural signal for this bar.
+    bool rawEffectiveSignalNow = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or intervalFoundationSignalNow or openingConfluenceReleaseSignalNow
+    bool signalCameFromFailure = false
+    int effectiveDirection = priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalDirection : macro950BgobSignalNow ? macro950BgobSignalDirection : reversalFoundationSignalNow ? reversalFoundationSignalDirection : intervalFoundationSignalNow ? intervalFoundationSignalDirection : sessionAnchorDirection
+    float effectiveTop = priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalTop : macro950BgobSignalNow ? macro950BgobSignalTop : reversalFoundationSignalNow ? reversalFoundationSignalTop : intervalFoundationSignalNow ? intervalFoundationSignalTop : sessionConfluenceMasterTop
+    float effectiveBottom = priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalBottom : macro950BgobSignalNow ? macro950BgobSignalBottom : reversalFoundationSignalNow ? reversalFoundationSignalBottom : intervalFoundationSignalNow ? intervalFoundationSignalBottom : sessionConfluenceMasterBottom
+    int stopFpiWindow = priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalWindow : reversalFoundationSignalNow ? reversalFoundationSignalAgainstFpiWindow : currentWindow >= 0 and array.get(selectedByWindow, currentWindow) ? currentWindow : sessionAnchorWindow
+    float intervalThreeCandleHigh = stopFpiWindow >= 0 ? array.get(intervalFpiThreeCandleHigh, stopFpiWindow) : na
+    float intervalThreeCandleLow = stopFpiWindow >= 0 ? array.get(intervalFpiThreeCandleLow, stopFpiWindow) : na
+    float macroBgobMidpointStop = macro950BgobSignalNow ? (macro950BgobSignalTop + macro950BgobSignalBottom) / 2.0 : na
+    float effectiveSl = macro950BgobSignalNow ? macroBgobMidpointStop : reversalFoundationSignalNow ? (effectiveDirection == 1 ? effectiveBottom : effectiveTop) : effectiveDirection == 1 ? intervalThreeCandleLow : intervalThreeCandleHigh
+    int effectiveWindow = priorRespectedFpiReversalSignalNow ? currentWindow : reversalFoundationSignalNow ? reversalFoundationSignalWindow : currentWindow
+    int effectiveSourceKind = priorRespectedFpiReversalSignalNow ? SOURCE_PRIOR_FPI_RETEST : macro950BgobSignalNow ? SOURCE_BGOB : reversalFoundationSignalNow ? SOURCE_REVERSAL_FOUNDATION : intervalFoundationSignalNow ? intervalFoundationSignalKind : sessionConfluenceMasterKind
+    bool effectiveInitialRetest = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or not reversalFoundationSignalNow
+    box effectiveStructureBox = na
+    bool effectiveCounterToController = sessionAnchorFpiFound and effectiveDirection != sessionAnchorDirection
+    bool sequenceAlignedWithController = reversalFoundationSignalNow and sessionAnchorFpiFound and effectiveDirection == sessionAnchorDirection
+    bool sequenceAlignedWithMacroOrigin = activeNyPhase != SESSION_PHASE_AM or not macro950Found or effectiveDirection == macro950Direction
+    bool sequenceAlignedEarlyPermission = cfg.allowControllerAlignedFoundationEntry and sequenceAlignedWithController and sequenceAlignedWithMacroOrigin
+    bool macroExpectedFoundationSignal = reversalFoundationSignalNow and ((effectiveDirection == 1 and bullishMacro950FoundationExpectation) or (effectiveDirection == -1 and bearishMacro950FoundationExpectation))
+    bool earlyCounterControllerFoundationSignal = reversalFoundationSignalNow and reversalFoundationEarlyEntryNow
+    bool effectiveMacroDirectionMatches = not macro950GateActive or effectiveDirection == macro950AuthorityDirection
+    bool effectiveMacroTransitionConfirmed = not macro950GateActive or effectiveDirection == macro950Direction or macro950AuthorityRetestConfirmed
+    // Core 1,008-case catalog audit. It is diagnostic by default. Enabling the strict
+    // gate allows a fresh AM entry only when the catalog approves the same direction.
+    bool catalogSessionRespected = sessionAnchorFpiFound and sessionAnchorWindow >= 0 and not catalogSessionDisrespectedLatched
+    int catalogSweepEvent = catalog.macroRangeEvent(catalogRange)
+    int catalogStructure = rawEffectiveSignalNow ? effectiveDirection : catalog.STRUCT_NONE
+    catalog.CatalogDecision catalogDecision = catalog.resolveFromPrices(sessionAnchorDirection, macro950Direction, catalogSessionRespected, close, sessionAnchorBottom, sessionAnchorTop, macro950Bottom, macro950Top, catalogSweepEvent, catalogStructure)
+    bool catalogAvailable = cfg.enableCatalogAudit and activeNyPhase == SESSION_PHASE_AM and catalogRange.locked and sessionAnchorFpiFound and macro950Found
+    bool catalogDirectionAllowed = not cfg.enforceCatalogGate or not catalogAvailable or (effectiveDirection == 1 ? catalogDecision.terminalAction == catalog.ACTION_BUY_ELIGIBLE : effectiveDirection == -1 ? catalogDecision.terminalAction == catalog.ACTION_SELL_ELIGIBLE : true)
+    string catalogSummary = catalogAvailable ? "CATALOG " + catalog.actionText(catalogDecision.terminalAction) + " | " + catalog.stateText(catalogDecision.resolvedState) + " | " + catalog.sweepText(catalogSweepEvent) + " | " + catalog.structureText(catalogStructure) : "CATALOG N/A"
+
+    bool effectiveDirectionAllowedByMacro950 = priorRespectedFpiReversalSignalNow ? true : macro950BgobSignalNow ? true : earlyCounterControllerFoundationSignal ? true : macroExpectedFoundationSignal ? true : sequenceAlignedEarlyPermission ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : effectiveMacroDirectionMatches and effectiveMacroTransitionConfirmed
+    bool counterSessionBeyondAnchor = sessionAnchorDirection == 1 and effectiveDirection == -1 ? close < sessionAnchorBottom : sessionAnchorDirection == -1 and effectiveDirection == 1 ? close > sessionAnchorTop : false
+    bool effectiveDirectionAllowedBySession = priorRespectedFpiReversalSignalNow ? true : macro950BgobSignalNow ? true : earlyCounterControllerFoundationSignal ? true : macroExpectedFoundationSignal ? true : sequenceAlignedEarlyPermission ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : not sessionAnchorFpiFound or effectiveDirection == sessionAnchorDirection or counterSessionBeyondAnchor
+    bool effectiveDirectionAllowedByConfluence = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or (reversalModeActive ? effectiveDirection == reversalModeDirection : intervalFoundationSignalNow or not sessionConfluenceBiasActive or effectiveDirection == sessionAnchorDirection)
+    // A fresh phase-extreme reversal foundation may replace an older ordinary campaign
+    // anchor. It still cannot override a fully confirmed narrative hold without that
+    // narrative first losing its governing authority.
+    bool qualifiedEarlyFoundationAuthority = earlyCounterControllerFoundationSignal and reversalFoundationSignalNow
+    bool campaignSignalCompatible = priorRespectedFpiReversalSignalNow or qualifiedEarlyFoundationAuthority or not campaignHoldActive or effectiveDirection == recordedTradeDirection
+    bool intervalAuthoritySignalCompatible = priorRespectedFpiReversalSignalNow or qualifiedEarlyFoundationAuthority or not priorIntervalHoldActive or effectiveDirection == recordedTradeDirection
+    bool confirmedNarrativeSignalCompatible = not recordedNarrativeHoldConfirmed or not recordedTradeOpen or effectiveDirection == recordedTradeDirection
+    bool campaignReentryDirectionCompatible = priorRespectedFpiReversalSignalNow ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : not campaignReentryAlignedOnly or effectiveDirection == sessionAnchorDirection
+    bool reversalModeWindowSupports = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or not reversalModeActive or (currentWindow >= 0 and array.get(selectedByWindow, currentWindow) and array.get(intervalFpiOriginalDirection, currentWindow) == reversalModeDirection)
+    // The management lock is directional. A failed short may block another short,
+    // but it must not suppress a fully confirmed bullish Macro-FPI + OB reversal.
+    bool enigmaBlocksEffectiveDirection = cfg.enableEnigmaManagement and enigmaDecision.entriesBlocked and enigmaState.blockedDirection == effectiveDirection
+    bool authoritativeMacroStructureSignal = macro950BgobSignalNow or macroExpectedFoundationSignal
+    bool ordinaryWaitLocksClear = not failedRecoveryWait and not campaignReentryWait and not intervalReentryWait
+    bool standardSignalLocksClear = (authoritativeMacroStructureSignal or qualifiedEarlyFoundationAuthority or ordinaryWaitLocksClear) and not mandatoryStructureExitNow and not targetWindowLock and not openingFpiWindowLock and not enigmaBlocksEffectiveDirection
+
+    // Premium/discount gate from the active NY-phase dealing range.
+    // The structure/retest zone determines location, not a later chased close.
+    float activeDealingRangeHigh = sessionExtremeHigh
+    float activeDealingRangeLow = sessionExtremeLow
+    float activeDealingRangeEquilibrium = not na(activeDealingRangeHigh) and not na(activeDealingRangeLow) ? (activeDealingRangeHigh + activeDealingRangeLow) / 2.0 : na
+    float effectiveLocationReference = not na(effectiveTop) and not na(effectiveBottom) ? (effectiveTop + effectiveBottom) / 2.0 : close
+    bool effectiveDirectionAllowedByLocation = not cfg.enforcePremiumDiscountEntries or na(activeDealingRangeEquilibrium) or (effectiveDirection == 1 ? effectiveLocationReference <= activeDealingRangeEquilibrium : effectiveLocationReference >= activeDealingRangeEquilibrium)
+    bool oppositeEffectiveSignalBodyConfirmed = not recordedTradeOpen or strategy.position_size == 0 or effectiveDirection == recordedTradeDirection or not cfg.requireDirectionalBodyForFpiFailure or directionalBodyFor(effectiveDirection)
+
+    bool effectiveSignalNow = rawEffectiveSignalNow and (priorRespectedFpiReversalSignalNow or standardSignalLocksClear) and reversalModeWindowSupports and campaignSignalCompatible and intervalAuthoritySignalCompatible and confirmedNarrativeSignalCompatible and campaignReentryDirectionCompatible and effectiveDirectionAllowedByMacro950 and effectiveDirectionAllowedBySession and effectiveDirectionAllowedByConfluence and effectiveDirectionAllowedByLocation and oppositeEffectiveSignalBodyConfirmed and catalogDirectionAllowed
+
+    bool positionChangedBySignal = false
+    if effectiveSignalNow and cfg.enableBot and isOneMinute and entryTimeAllowed and barstate.isconfirmed
+        int existingDirection = positionDirection()
+        bool enteringFromFlat = existingDirection == 0
+        bool oppositePosition = existingDirection != 0 and existingDirection != effectiveDirection
+        bool sameDirectionPosition = existingDirection == effectiveDirection
+        bool sendEntry = enteringFromFlat or oppositePosition
+
+        if sendEntry
+            // Any validated opposite bias is the prior trade's event-based TP and immediate reversal.
+            if recordedTradeOpen
+                strategy.cancel(PROTECTION_ID)
+                if oppositePosition
+                    recordedTp := close
+                closedDirectionNow := existingDirection != 0 ? existingDirection : recordedTradeDirection
+                float priorPoints = tradePoints(recordedTradeDirection, recordedEntry, close)
+                sessionClosedPoints += priorPoints
+                if recordedWindow >= 0 and recordedSlot >= 0
+                    writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, priorPoints, false, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+                drawExitTriangleNow := true
+                drawExitTriangleDirection := recordedTradeDirection
+                drawExitTrianglePrice := close
+                drawClosedTradeEntryBar := recordedEntryBar
+                drawClosedTradeEntryPrice := recordedEntry
+                recordedTradeOpen := false
+                recordedEarlyReversal := false
+                recordedNarrativeHoldConfirmed := false
+                exitNow := true
+
+            strategy.cancel(PROTECTION_ID)
+            if effectiveDirection == 1
+                strategy.entry(ORDER_ID, strategy.long, qty=cfg.orderQuantity, comment="BUY")
+                buyEntryNow := true
+            else
+                strategy.entry(ORDER_ID, strategy.short, qty=cfg.orderQuantity, comment="SELL")
+                sellEntryNow := true
+
+            recordedTradeOpen := true
+            recordedTradeDirection := effectiveDirection
+            recordedEntry := close
+            drawEntryTriangleNow := true
+            drawEntryTriangleDirection := effectiveDirection
+            drawEntryTrianglePrice := recordedEntry
+            float foundationFallbackSl = effectiveDirection == 1 ? effectiveBottom : effectiveTop
+            bool fpiStopIsProtective = effectiveDirection == 1 ? not na(effectiveSl) and effectiveSl < recordedEntry : not na(effectiveSl) and effectiveSl > recordedEntry
+            bool foundationStopIsProtective = effectiveDirection == 1 ? not na(foundationFallbackSl) and foundationFallbackSl < recordedEntry : not na(foundationFallbackSl) and foundationFallbackSl > recordedEntry
+            recordedSl := fpiStopIsProtective ? effectiveSl : foundationStopIsProtective ? foundationFallbackSl : na
+            // The ledger belongs to the interval where the order actually executed.
+            // activeSourceWindow below still retains the source structure interval.
+            recordedWindow := currentWindow
+            recordedTradePhaseStartWindow := phaseStartWindow(activeNyPhase)
+            recordedEntryBar := bar_index
+            recordedClosedTradesAtEntry := strategy.closedtrades
+            recordedTarget := effectiveDirection == 1 ? recordedEntry + FIXED_TARGET_POINTS : recordedEntry - FIXED_TARGET_POINTS
+            recordedTp := recordedTarget
+            recordedMaxProfitPoints := 0.0
+            recordedBreakEvenArmed := false
+            recordedEarlyReversal := reversalFoundationSignalNow and reversalFoundationEarlyEntryNow
+            recordedNarrativeHoldConfirmed := reversalFoundationSignalNow and reversalFoundationNarrativeConfirmedNow
+            campaignHoldAnchorFound := false
+            campaignHoldAnchorWindow := -1
+            campaignHoldAnchorTop := na
+            campaignHoldAnchorBottom := na
+            campaignAnchorSelectionConsumed := false
+            campaignReentryAlignedOnly := false
+            recoveryTradeFpiWindow := stopFpiWindow
+            recoveryTradeFpiTop := stopFpiWindow >= 0 ? array.get(intervalFpiTop, stopFpiWindow) : na
+            recoveryTradeFpiBottom := stopFpiWindow >= 0 ? array.get(intervalFpiBottom, stopFpiWindow) : na
+            int recoveryTradeFpiDirection = stopFpiWindow >= 0 ? array.get(intervalFpiOriginalDirection, stopFpiWindow) : 0
+            recoveryTradeWatchEligible := recoveryTradeFpiDirection == effectiveDirection and not na(recoveryTradeFpiTop) and not na(recoveryTradeFpiBottom) and (effectiveDirection == 1 ? recordedEntry < recoveryTradeFpiBottom : recordedEntry > recoveryTradeFpiTop)
+            recoveryTradeAcceptanceSeen := false
+            recoveryTradeAcceptanceBar := na
+            // A close-disrespect reversal is not a successful BGOB retest, even when
+            // the failed active boundary happened to be a BGOB.
+            recordedOriginKind := signalCameFromFailure ? SOURCE_NONE : effectiveSourceKind
+            recordedOriginTop := effectiveTop
+            recordedOriginBottom := effectiveBottom
+            int ledgerCount = array.get(ledgerCountByWindow, recordedWindow)
+            recordedSlot := math.min(ledgerCount, MAX_LEDGER_ROWS - 1)
+            if ledgerCount < MAX_LEDGER_ROWS
+                array.set(ledgerCountByWindow, recordedWindow, ledgerCount + 1)
+            writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, na, true, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+
+            activeHasFpi := true
+            activeFpiValid := true
+            activeProtectionEnabled := true
+            activeTradeDirection := effectiveDirection
+            activeTop := effectiveTop
+            activeBottom := effectiveBottom
+            activeInvalidation := recordedSl
+            activeFpiBar := bar_index
+            activeFpiBox := effectiveStructureBox
+            activeCanReverse := not signalCameFromFailure and not recordedEarlyReversal
+            activeSourceKind := signalCameFromFailure ? SOURCE_NONE : effectiveSourceKind
+            activeSourceWindow := effectiveWindow
+            activeRetestCount := effectiveSourceKind == SOURCE_BGOB or effectiveSourceKind == SOURCE_ORDER_BLOCK or effectiveSourceKind == SOURCE_REVERSAL_FOUNDATION ? 0 : (effectiveInitialRetest or delayedFpiSignalNow or fpiRequalificationSignalNow ? 1 : 0)
+            activeTouchedLast := effectiveSourceKind != SOURCE_BGOB and effectiveSourceKind != SOURCE_ORDER_BLOCK and effectiveSourceKind != SOURCE_REVERSAL_FOUNDATION and effectiveInitialRetest
+            activeSecondRetestConsumed := fpiRequalificationSignalNow
+            delayedFpiReversal := false
+            fpiRequalificationWatch := false
+            fpiRequalificationAcceptanceConfirmed := false
+            fpiRequalificationAcceptanceBar := na
+            positionChangedBySignal := true
+            if reversalFoundationSignalNow
+                if effectiveDirection == 1
+                    bullRevFoundationUsed := true
+                else
+                    bearRevFoundationUsed := true
+            if priorRespectedFpiReversalSignalNow and priorRespectedFpiReversalWindow >= 0
+                array.set(intervalFpiReversalUsed, priorRespectedFpiReversalWindow, true)
+
+        else if sameDirectionPosition
+            if reversalFoundationSignalNow and reversalFoundationNarrativeConfirmedNow
+                recordedNarrativeHoldConfirmed := true
+                recordedEarlyReversal := false
+            if campaignHoldActive or priorIntervalHoldActive or recordedNarrativeHoldConfirmed
+                campaignLegNow := true
+                campaignLegDirection := recordedTradeDirection
+                campaignLegPrice := close
+                if reversalFoundationSignalNow
+                    if effectiveDirection == 1
+                        bullRevFoundationUsed := true
+                    else
+                        bearRevFoundationUsed := true
+            // Every validated same-bias structure is retained as confluence. The newest
+            // signal may remain the active touch counter, but it cannot erase the older
+            // low-to-high / high-to-low foundation used by the economic trade.
+            activeHasFpi := true
+            activeFpiValid := true
+            activeProtectionEnabled := true
+            activeTradeDirection := effectiveDirection
+            activeTop := effectiveTop
+            activeBottom := effectiveBottom
+            activeInvalidation := recordedSl
+            activeFpiBar := bar_index
+            activeFpiBox := effectiveStructureBox
+            activeCanReverse := not recordedEarlyReversal
+            activeSourceKind := effectiveSourceKind
+            activeSourceWindow := effectiveWindow
+            activeRetestCount := effectiveSourceKind == SOURCE_BGOB or effectiveSourceKind == SOURCE_ORDER_BLOCK or effectiveSourceKind == SOURCE_REVERSAL_FOUNDATION ? 0 : (effectiveInitialRetest ? 1 : 0)
+            activeTouchedLast := effectiveSourceKind != SOURCE_BGOB and effectiveSourceKind != SOURCE_ORDER_BLOCK and effectiveSourceKind != SOURCE_REVERSAL_FOUNDATION and effectiveInitialRetest
+            activeSecondRetestConsumed := false
+
+            delayedFpiReversal := false
+            if fpiRequalificationSignalNow
+                fpiRequalificationWatch := false
+                fpiRequalificationAcceptanceConfirmed := false
+                fpiRequalificationAcceptanceBar := na
+
+            if recordedTradeOpen
+                // Later same-direction confluence cannot pull the original stop up to
+                // entry. Only the explicit 80-point break-even rule may do that.
+                recordedSl := recordedBreakEvenArmed ? recordedEntry : recordedSl
+                if recordedWindow >= 0 and recordedSlot >= 0
+                    writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, na, true, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+
+    // Mandatory structure exits have priority over all entries and reversals on this bar.
+    if not positionChangedBySignal and cfg.enableBot and isOneMinute and inSession and barstate.isconfirmed and strategy.position_size != 0 and mandatoryStructureExitNow
+        int closingDirection = positionDirection()
+        closedDirectionNow := closingDirection
+        strategy.cancel(PROTECTION_ID)
+        if enigmaExitNow
+            // The library owns the post-exit HH/LL lock. Do not arm an automatic opposite reversal.
+            failedRecoveryWait := false
+            campaignReentryWait := false
+            intervalReentryWait := false
+            delayedFpiReversal := false
+            fpiRequalificationWatch := false
+            fpiRequalificationAcceptanceConfirmed := false
+            fpiRequalificationAcceptanceBar := na
+        else if profitableRecoveryFailureNow
+            failedRecoveryWait := true
+            failedRecoveryExitWindow := currentWindow
+            recoveryTradeWatchEligible := false
+            recoveryTradeAcceptanceSeen := false
+            recoveryTradeAcceptanceBar := na
+            campaignHoldAnchorFound := false
+            campaignHoldAnchorWindow := -1
+            campaignHoldAnchorTop := na
+            campaignHoldAnchorBottom := na
+            campaignReentryWait := false
+            campaignReentryExitWindow := -1
+            campaignReentryAlignedOnly := false
+        else if reversalTransitionExitNow
+            campaignHoldAnchorFound := false
+            campaignHoldAnchorWindow := -1
+            campaignHoldAnchorTop := na
+            campaignHoldAnchorBottom := na
+            campaignReentryWait := false
+            campaignReentryExitWindow := -1
+            campaignReentryAlignedOnly := false
+        else if campaignHoldAnchorDisrespectedNow
+            campaignReentryWait := true
+            campaignReentryExitWindow := currentWindow
+            campaignReentryAlignedOnly := false
+            campaignHoldAnchorFound := false
+            campaignHoldAnchorWindow := -1
+            campaignHoldAnchorTop := na
+            campaignHoldAnchorBottom := na
+        else if intervalAuthorityExitNow
+            intervalReentryWait := true
+            intervalReentryExitWindow := currentWindow
+            intervalReentryDirection := recordedTradeDirection
+        else if activeFpiSecondRetestExitNow
+            fpiRequalificationWatch := true
+            fpiRequalificationDirection := activeTradeDirection
+            fpiRequalificationTop := activeTop
+            fpiRequalificationBottom := activeBottom
+            fpiRequalificationWindow := activeSourceWindow
+            fpiRequalificationBar := bar_index
+            fpiRequalificationAcceptanceConfirmed := false
+            fpiRequalificationAcceptanceBar := na
+        else if confluenceFoundationExitNow and confluenceMasterKindBefore != SOURCE_BGOB
+            // The foundation failure itself closes first. Beginning with the next
+            // confirmed bar, an outside close may qualify the opposite direction.
+            fpiRequalificationWatch := true
+            fpiRequalificationDirection := sessionAnchorDirection
+            fpiRequalificationTop := confluenceMasterTopBefore
+            fpiRequalificationBottom := confluenceMasterBottomBefore
+            fpiRequalificationWindow := currentWindow
+            fpiRequalificationBar := bar_index
+            fpiRequalificationAcceptanceConfirmed := false
+            fpiRequalificationAcceptanceBar := na
+        if recordedTradeOpen
+            recordedTp := close
+            float mandatoryExitPoints = tradePoints(recordedTradeDirection, recordedEntry, close)
+            sessionClosedPoints += mandatoryExitPoints
+            if recordedWindow >= 0 and recordedSlot >= 0
+                writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, mandatoryExitPoints, false, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+            drawExitTriangleNow := true
+            drawExitTriangleDirection := recordedTradeDirection
+            drawExitTrianglePrice := close
+            drawClosedTradeEntryBar := recordedEntryBar
+            drawClosedTradeEntryPrice := recordedEntry
+            recordedTradeOpen := false
+            recordedEarlyReversal := false
+            recordedNarrativeHoldConfirmed := false
+        string mandatoryExitComment = enigmaExitNow ? enigmaDecision.reason : closeSideText(closingDirection)
+        strategy.close(ORDER_ID, comment=mandatoryExitComment)
+        exitNow := true
+        activeFpiValid := false
+        activeSourceKind := SOURCE_NONE
+        delayedFpiReversal := false
+
+    // After one failure reversal, a second failure of that same FPI exits rather than recycling it.
+    // Wicks are deliberately ignored in both cases.
+    if not positionChangedBySignal and cfg.enableBot and isOneMinute and inSession and barstate.isconfirmed and strategy.position_size != 0 and activeExitOnlyNow
+        int closingDirection = positionDirection()
+        closedDirectionNow := closingDirection
+        strategy.cancel(PROTECTION_ID)
+        if recordedTradeOpen
+            recordedTp := close
+            float managedPoints = tradePoints(recordedTradeDirection, recordedEntry, close)
+            sessionClosedPoints += managedPoints
+            if recordedWindow >= 0 and recordedSlot >= 0
+                writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, managedPoints, false, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+            drawExitTriangleNow := true
+            drawExitTriangleDirection := recordedTradeDirection
+            drawExitTrianglePrice := close
+            drawClosedTradeEntryBar := recordedEntryBar
+            drawClosedTradeEntryPrice := recordedEntry
+            recordedTradeOpen := false
+            recordedEarlyReversal := false
+            recordedNarrativeHoldConfirmed := false
+        strategy.close(ORDER_ID, comment=closeSideText(closingDirection))
+        exitNow := true
+        activeFpiValid := false
+        activeSourceKind := SOURCE_NONE
+        delayedFpiReversal := false
+        if not na(activeFpiBox)
+            box.set_border_color(activeFpiBox, color.new(#f08c00, 0))
+            box.set_border_width(activeFpiBox, 2)
+
+    // The 4:49 bar close finalizes the economic trade so the account is flat by 4:50 PM New York.
+    if cfg.forceFlatBy450 and finalTradableBar and barstate.isconfirmed and strategy.position_size != 0
+        int closingDirection = positionDirection()
+        closedDirectionNow := closingDirection
+        strategy.cancel(PROTECTION_ID)
+        if recordedTradeOpen
+            recordedTp := close
+            float sessionPoints = tradePoints(recordedTradeDirection, recordedEntry, close)
+            sessionClosedPoints += sessionPoints
+            if recordedWindow >= 0 and recordedSlot >= 0
+                writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, sessionPoints, false, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+            drawExitTriangleNow := true
+            drawExitTriangleDirection := recordedTradeDirection
+            drawExitTrianglePrice := close
+            drawClosedTradeEntryBar := recordedEntryBar
+            drawClosedTradeEntryPrice := recordedEntry
+            recordedTradeOpen := false
+            recordedEarlyReversal := false
+            recordedNarrativeHoldConfirmed := false
+        strategy.close_all(comment=closeSideText(closingDirection))
+        exitNow := true
+        activeFpiValid := false
+        activeSourceKind := SOURCE_NONE
+        delayedFpiReversal := false
+        campaignHoldAnchorFound := false
+        campaignHoldAnchorWindow := -1
+        campaignHoldAnchorTop := na
+        campaignHoldAnchorBottom := na
+        fpiRequalificationWatch := false
+        fpiRequalificationAcceptanceConfirmed := false
+        fpiRequalificationAcceptanceBar := na
+
+    // Defensive cutoff: no position may remain after 4:50 PM even if the exact 4:49
+    // bar was unavailable or the script was attached after the cutoff.
+    if cfg.forceFlatBy450 and inSession and nowMinute >= FORCE_FLAT_MINUTE and barstate.isconfirmed and strategy.position_size != 0
+        int closingDirection = positionDirection()
+        closedDirectionNow := closingDirection
+        strategy.cancel(PROTECTION_ID)
+        if recordedTradeOpen
+            recordedTp := close
+            float cutoffPoints = tradePoints(recordedTradeDirection, recordedEntry, close)
+            sessionClosedPoints += cutoffPoints
+            if recordedWindow >= 0 and recordedSlot >= 0
+                writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, cutoffPoints, false, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+            drawExitTriangleNow := true
+            drawExitTriangleDirection := recordedTradeDirection
+            drawExitTrianglePrice := close
+            drawClosedTradeEntryBar := recordedEntryBar
+            drawClosedTradeEntryPrice := recordedEntry
+            recordedTradeOpen := false
+            recordedEarlyReversal := false
+            recordedNarrativeHoldConfirmed := false
+        strategy.close_all(comment=closeSideText(closingDirection))
+        exitNow := true
+        activeFpiValid := false
+        activeSourceKind := SOURCE_NONE
+        delayedFpiReversal := false
+
+    if cfg.forceFlatBy450 and sessionEnded and barstate.isconfirmed and strategy.position_size != 0
+        int closingDirection = positionDirection()
+        closedDirectionNow := closingDirection
+        strategy.cancel(PROTECTION_ID)
+        if recordedTradeOpen
+            recordedTp := close
+            float fallbackPoints = tradePoints(recordedTradeDirection, recordedEntry, close)
+            sessionClosedPoints += fallbackPoints
+            if recordedWindow >= 0 and recordedSlot >= 0
+                writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, fallbackPoints, false, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+            drawExitTriangleNow := true
+            drawExitTriangleDirection := recordedTradeDirection
+            drawExitTrianglePrice := close
+            drawClosedTradeEntryBar := recordedEntryBar
+            drawClosedTradeEntryPrice := recordedEntry
+            recordedTradeOpen := false
+            recordedEarlyReversal := false
+            recordedNarrativeHoldConfirmed := false
+        strategy.close_all(comment=closeSideText(closingDirection))
+        exitNow := true
+        activeFpiValid := false
+        activeSourceKind := SOURCE_NONE
+        delayedFpiReversal := false
+        campaignHoldAnchorFound := false
+        campaignHoldAnchorWindow := -1
+        campaignHoldAnchorTop := na
+        campaignHoldAnchorBottom := na
+        fpiRequalificationWatch := false
+        fpiRequalificationAcceptanceConfirmed := false
+        fpiRequalificationAcceptanceBar := na
+
+    // Resting protection: the full three-candle FPI extreme, fixed 500-point target,
+    // and entry price only after 80 favorable points.
+    if recordedTradeOpen and cfg.enableBot and isOneMinute and entryTimeAllowed and barstate.isconfirmed
+        float protectiveStop = recordedBreakEvenArmed ? recordedEntry : recordedSl
+        strategy.exit(PROTECTION_ID, from_entry=ORDER_ID, stop=protectiveStop, limit=recordedTarget, comment=recordedBreakEvenArmed ? "BREAK EVEN / 500 TP" : "FPI 3-CANDLE SL / 500 TP")
+
+    // Centered session-wide confluence and result boxes remain beneath every ledger.
+    // The confluence row reports the exact surviving stack in its economic order.
+    if isOneMinute and not na(sessionPriceLow) and (inSession or sessionEnded)
+        float confluenceBoxTop = sessionPriceLow - cfg.tradeTableGap - cfg.tradeTableHeight - cfg.tradeTableGap
+        float confluenceBoxBottom = confluenceBoxTop - cfg.tradeTableHeight
+        if drawConfluenceStatus and not na(confluenceStatusBox)
+            box.set_top(confluenceStatusBox, confluenceBoxTop)
+            box.set_bottom(confluenceStatusBox, confluenceBoxBottom)
+            box.set_text(confluenceStatusBox, confluenceSummary(sessionAnchorDirection, sessionFpiRegime, sessionConfluenceValidCount, sessionConfluenceMasterBoundary, confluenceBoundary, confluenceValid, reversalModeActive, reversalModeDirection, validSupportIntervalCount, validResistanceIntervalCount))
+            color confluenceStatusColor = reversalModeActive ? (reversalModeDirection == 1 ? color.new(#2b8a3e, 12) : color.new(#c92a2a, 12)) : sessionConfluenceHoldActive ? color.new(#0b7285, 12) : sessionFpiRegime == SESSION_REGIME_ALIGNED ? color.new(#2b8a3e, 12) : sessionFpiRegime == SESSION_REGIME_JUDAS ? color.new(#c92a2a, 12) : color.new(#495057, 12)
+            box.set_bgcolor(confluenceStatusBox, confluenceStatusColor)
+        if drawSessionResults and not na(sessionResultBox)
+            float sessionResultsTop = drawConfluenceStatus ? confluenceBoxBottom - cfg.tradeTableGap : confluenceBoxTop
+            float sessionResultsBottom = sessionResultsTop - cfg.tradeTableHeight
+            box.set_top(sessionResultBox, sessionResultsTop)
+            box.set_bottom(sessionResultBox, sessionResultsBottom)
+            box.set_text(sessionResultBox, "NY SESSION RESULTS\n" + signedPointsText(sessionClosedPoints))
+            box.set_bgcolor(sessionResultBox, resultColor(sessionClosedPoints))
+            if not na(dailyTradeLogBox)
+                int totalDailyTrades = dailyTradeCount(ledger)
+                float dailyLogTop = sessionResultsBottom - cfg.tradeTableGap
+                float dailyLogHeight = cfg.tradeTableHeight * math.max(2.0, 1.0 + totalDailyTrades * 0.55)
+                box.set_top(dailyTradeLogBox, dailyLogTop)
+                box.set_bottom(dailyTradeLogBox, dailyLogTop - dailyLogHeight)
+                box.set_text(dailyTradeLogBox, dailyTradeLogText(ledger))
+
+    // -----------------------------------------------------------------------------------------------------
+    // Clean execution text. Native TradingView quantity markers must be disabled in the strategy Style UI.
+    // -----------------------------------------------------------------------------------------------------
+    float executionTextGap = math.max((high - low) * 0.35, syminfo.mintick * 8.0)
+    if cfg.showCleanTradeText and exitNow and closedDirectionNow != 0
+        bool closedBuy = closedDirectionNow == 1
+        label.new(x=bar_index, y=closedBuy ? high + executionTextGap : low - executionTextGap, text=closeSideText(closedDirectionNow), yloc=yloc.price, style=label.style_none, textcolor=color.new(color.black, 0), size=size.large, textalign=text.align_center)
+    if cfg.showCleanTradeText and buyEntryNow
+        label.new(x=bar_index, y=low - executionTextGap * (exitNow ? 2.0 : 1.0), text="BUY", yloc=yloc.price, style=label.style_none, textcolor=color.new(#2b8a3e, 0), size=size.huge, textalign=text.align_center)
+    if cfg.showCleanTradeText and sellEntryNow
+        label.new(x=bar_index, y=high + executionTextGap * (exitNow ? 2.0 : 1.0), text="SELL", yloc=yloc.price, style=label.style_none, textcolor=color.new(#c92a2a, 0), size=size.huge, textalign=text.align_center)
