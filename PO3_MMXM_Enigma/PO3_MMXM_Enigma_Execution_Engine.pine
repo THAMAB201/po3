@@ -1,7 +1,7 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
 // © SunovaBeach
 //@version=6
-// @description Compact PO3 MMXM Enigma execution coordinator. Reuses the version-2 engine and adds local OB-retest plus post-OB directional IMB first-retest entries across every catalog state without exceeding Pine's main-body compilation limit.
+// @description Compact PO3 MMXM Enigma execution coordinator. Uses the first NY Session FPI as direction, enters directly on a confirmed local OB retest, and also supports later post-OB IMB retests across every catalog state.
 library("PO3MMXMEnigmaExecutionEngine", overlay = true, dynamic_requests = true)
 
 // TradingView libraries may import previous versions of themselves. Version 2 remains
@@ -239,6 +239,7 @@ foundationStep(EnigmaConfig cfg) =>
     var float bullishObBottom = na
     var int bullishObConfirmBar = na
     var bool bullishObRetested = false
+    var bool bullishObUsed = false
 
     var bool bearishRunActive = false
     var float bearishRunTop = na
@@ -254,6 +255,7 @@ foundationStep(EnigmaConfig cfg) =>
     var float bearishObBottom = na
     var int bearishObConfirmBar = na
     var bool bearishObRetested = false
+    var bool bearishObUsed = false
 
     var bool bullishImbFound = false
     var int bullishImbDirection = 0
@@ -269,10 +271,13 @@ foundationStep(EnigmaConfig cfg) =>
     var int bearishImbFormationBar = na
     var bool bearishImbUsed = false
 
-    if sessionStart or phaseChanged
-        activePhase := currentPhase
+    // The first FPI after 09:30 is the Session FPI and remains the controller all day.
+    if sessionStart
         controllerFound := false
         controllerDirection := 0
+
+    if sessionStart or phaseChanged
+        activePhase := currentPhase
         phaseHigh := high
         phaseLow := low
 
@@ -290,6 +295,7 @@ foundationStep(EnigmaConfig cfg) =>
         bullishObBottom := na
         bullishObConfirmBar := na
         bullishObRetested := false
+        bullishObUsed := false
         bullishImbFound := false
         bullishImbDirection := 0
         bullishImbTop := na
@@ -311,6 +317,7 @@ foundationStep(EnigmaConfig cfg) =>
         bearishObBottom := na
         bearishObConfirmBar := na
         bearishObRetested := false
+        bearishObUsed := false
         bearishImbFound := false
         bearishImbDirection := 0
         bearishImbTop := na
@@ -390,6 +397,7 @@ foundationStep(EnigmaConfig cfg) =>
             bullishObBottom := bullishCandidateBottom
             bullishObConfirmBar := bar_index
             bullishObRetested := false
+            bullishObUsed := false
             bullishImbFound := false
             bullishImbDirection := 0
             bullishImbTop := na
@@ -405,6 +413,7 @@ foundationStep(EnigmaConfig cfg) =>
             bearishObBottom := bearishCandidateBottom
             bearishObConfirmBar := bar_index
             bearishObRetested := false
+            bearishObUsed := false
             bearishImbFound := false
             bearishImbDirection := 0
             bearishImbTop := na
@@ -412,13 +421,33 @@ foundationStep(EnigmaConfig cfg) =>
             bearishImbFormationBar := na
             bearishImbUsed := false
 
+        bool bullishFpiActive = controllerFound and controllerDirection == 1
+        bool bearishFpiActive = controllerFound and controllerDirection == -1
+
+        // Primary entry: Session FPI direction + confirmed local OB + first successful retest/close.
         bool bullishObRetestNow = bullishObConfirmed and not bullishObRetested and bar_index > bullishObConfirmBar and low <= bullishObTop and high >= bullishObBottom and close > bullishObTop
         if bullishObRetestNow
             bullishObRetested := true
+            if bullishFpiActive and not bullishObUsed
+                bullishObUsed := true
+                buySignal := true
+                signalZoneTop := bullishObTop
+                signalZoneBottom := bullishObBottom
+                signalObTop := bullishObTop
+                signalObBottom := bullishObBottom
+                signalSourceBar := bullishObConfirmBar
 
         bool bearishObRetestNow = bearishObConfirmed and not bearishObRetested and bar_index > bearishObConfirmBar and high >= bearishObBottom and low <= bearishObTop and close < bearishObBottom
         if bearishObRetestNow
             bearishObRetested := true
+            if bearishFpiActive and not bearishObUsed
+                bearishObUsed := true
+                sellSignal := true
+                signalZoneTop := bearishObTop
+                signalZoneBottom := bearishObBottom
+                signalObTop := bearishObTop
+                signalObBottom := bearishObBottom
+                signalSourceBar := bearishObConfirmBar
 
         // After the local OB has validated and successfully retested, retain the lowest
         // bullish IMB or highest bearish IMB created afterward.
@@ -449,7 +478,7 @@ foundationStep(EnigmaConfig cfg) =>
         bool bullishDirectionEnabled = bullishControllerAligned ? cfg.allowControllerAlignedFoundationEntry : cfg.allowEarlyCounterControllerFoundationEntry
         bool bullishRetestNow = bullishImbFound and not bullishImbUsed and bar_index > bullishImbFormationBar and bullishZoneOverlap and bullishOutsideClose
 
-        if bullishDirectionEnabled and bullishRetestNow and bullishComponentsRespected
+        if not buySignal and bullishDirectionEnabled and bullishRetestNow and bullishComponentsRespected
             bullishImbUsed := true
             buySignal := true
             signalZoneTop := bullishImbTop
@@ -465,7 +494,7 @@ foundationStep(EnigmaConfig cfg) =>
         bool bearishDirectionEnabled = bearishControllerAligned ? cfg.allowControllerAlignedFoundationEntry : cfg.allowEarlyCounterControllerFoundationEntry
         bool bearishRetestNow = bearishImbFound and not bearishImbUsed and bar_index > bearishImbFormationBar and bearishZoneOverlap and bearishOutsideClose
 
-        if bearishDirectionEnabled and bearishRetestNow and bearishComponentsRespected
+        if not sellSignal and bearishDirectionEnabled and bearishRetestNow and bearishComponentsRespected
             bearishImbUsed := true
             sellSignal := true
             signalZoneTop := bearishImbTop
@@ -559,7 +588,7 @@ export run(EnigmaConfig cfg) =>
             strategy.exit(FOUNDATION_PROTECTION_ID, FOUNDATION_ORDER_ID, stop = foundationWorkingStop, limit = foundationTarget)
             supplementalBuyNow := true
             if cfg.showCleanTradeText
-                label.new(bar_index, low, "BUY\nPOST-OB IMB", style = label.style_label_up, color = color.new(#198754, 0), textcolor = color.white, size = size.small)
+                label.new(bar_index, low, "BUY\nOB/IMB FOUNDATION", style = label.style_label_up, color = color.new(#198754, 0), textcolor = color.white, size = size.small)
         else if foundation.sell
             foundationEntryPrice := close
             foundationInitialStop := math.max(foundation.obTop, foundation.zoneTop) + syminfo.mintick
@@ -573,7 +602,7 @@ export run(EnigmaConfig cfg) =>
             strategy.exit(FOUNDATION_PROTECTION_ID, FOUNDATION_ORDER_ID, stop = foundationWorkingStop, limit = foundationTarget)
             supplementalSellNow := true
             if cfg.showCleanTradeText
-                label.new(bar_index, high, "SELL\nPOST-OB IMB", style = label.style_label_down, color = color.new(#c92a2a, 0), textcolor = color.white, size = size.small)
+                label.new(bar_index, high, "SELL\nOB/IMB FOUNDATION", style = label.style_label_down, color = color.new(#c92a2a, 0), textcolor = color.white, size = size.small)
 
     if foundationTradeActive
         if foundationDirection == 1 and strategy.position_size > 0
