@@ -1,0 +1,40 @@
+name: Bundle Enigma Handoff
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  bundle:
+    if: github.event.issue.title == 'BUNDLE ENIGMA HANDOFF'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out handoff branch
+        uses: actions/checkout@v4
+        with:
+          ref: enigma-professional-package
+
+      - name: Create ZIP archive
+        run: |
+          rm -f PO3_MMXM_Enigma/PO3_MMXM_Enigma_HANDOFF.zip
+          cd PO3_MMXM_Enigma
+          zip -r PO3_MMXM_Enigma_HANDOFF.zip HANDOFF
+
+      - name: Commit archive
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PO3_MMXM_Enigma/PO3_MMXM_Enigma_HANDOFF.zip
+          if ! git diff --cached --quiet; then
+            git commit -m "Bundle PO3 MMXM Enigma handoff documentation"
+            git push origin HEAD:enigma-professional-package
+          fi
+
+      - name: Close trigger issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue close "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --comment "Handoff ZIP created on enigma-professional-package."
