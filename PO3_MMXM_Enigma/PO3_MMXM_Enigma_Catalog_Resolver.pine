@@ -1,0 +1,399 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © SunovaBeach
+//@version=6
+// @description PO3 MMXM Enigma Session-FPI / Macro-FPI catalog resolver. Implements the validated 1,008-case decision matrix without placing orders or drawing objects.
+library("PO3MMXMEnigmaCatalogResolver", overlay = false)
+
+// Directions.
+export const int DIR_NONE = 0
+export const int DIR_BULL = 1
+export const int DIR_BEAR = -1
+
+// Zone locations.
+export const int LOC_INSIDE = 0
+export const int LOC_ABOVE = 1
+export const int LOC_BELOW = -1
+export const int LOC_NA = 99
+
+// Session/Macro relationship.
+export const int REL_NA = 0
+export const int REL_AGREES = 1
+export const int REL_OPPOSES = -1
+
+// Macro-FPI status.
+export const int MACRO_TESTING = 0
+export const int MACRO_SUPPORTIVE = 1
+export const int MACRO_FAILED = -1
+export const int MACRO_NA = 99
+
+// Composite 3x3 location cell.
+export const int COMP_NEUTRAL = 0
+export const int COMP_BULL_LEAN = 1
+export const int COMP_BULL_CONFIRMED = 2
+export const int COMP_BEAR_LEAN = -1
+export const int COMP_BEAR_CONFIRMED = -2
+export const int COMP_LOCATION_CONFLICT = 3
+export const int COMP_INVALID_INPUT = 4
+export const int COMP_NA = 99
+
+// 9:50-10:10 macro-range sweep event.
+export const int SWEEP_NONE = 0
+export const int SWEEP_LOW_ONLY = -1
+export const int SWEEP_HIGH_ONLY = 1
+export const int SWEEP_BOTH = 2
+export const int SWEEP_NA = 99
+
+// Completed structural test supplied to the resolver.
+export const int STRUCT_NONE = 0
+export const int STRUCT_BULL = 1
+export const int STRUCT_BEAR = -1
+export const int STRUCT_BALANCED = 2
+export const int STRUCT_UNSTABLE = 3
+
+// Narrative states.
+export const int STATE_WAITING = 0
+export const int STATE_NORMAL_BULL = 1
+export const int STATE_NORMAL_BEAR = -1
+export const int STATE_JUDAS_DOWN = 2
+export const int STATE_JUDAS_UP = -2
+export const int STATE_TRANSITION_BULL = 3
+export const int STATE_TRANSITION_BEAR = -3
+export const int STATE_TWO_SIDED = 4
+export const int STATE_INVALID_INPUT = 5
+
+// Core catalog terminal actions.
+export const int ACTION_WAIT = 0
+export const int ACTION_BUY_ELIGIBLE = 1
+export const int ACTION_SELL_ELIGIBLE = -1
+export const int ACTION_NO_TRADE = 2
+export const int ACTION_NO_TRADE_COUNTERTREND = 3
+
+// Compact audit reason codes. These are stable machine IDs; display text is generated separately.
+export const int REASON_WAIT_NO_TRIGGER = 0
+export const int REASON_INVALID_SESSION_RESPECT = 1
+export const int REASON_ALIGNED_STRUCTURE = 2
+export const int REASON_COUNTERTREND_STRUCTURE = 3
+export const int REASON_TRANSITION_WAIT = 4
+export const int REASON_TRANSITION_CONFLICT = 5
+export const int REASON_TWO_SIDED_WAIT = 6
+export const int REASON_BOTH_BALANCED = 7
+export const int REASON_BOTH_UNSTABLE = 8
+export const int REASON_BOTH_ALIGNED = 9
+export const int REASON_BOTH_COUNTERTREND = 10
+
+export type CatalogDecision
+    bool validInput = false
+    int macroRelation = 0
+    int macroStatus = 99
+    int compositeLocation = 99
+    int baseState = 0
+    int candidateBias = 0
+    int approvedBias = 0
+    int resolvedState = 0
+    int terminalAction = 0
+    int reasonCode = 0
+
+export type MacroRangeState
+    float rangeHigh = na
+    float rangeLow = na
+    bool locked = false
+    bool highSwept = false
+    bool lowSwept = false
+    int highSweepBar = na
+    int lowSweepBar = na
+
+export newMacroRangeState() =>
+    MacroRangeState.new()
+
+export resetMacroRange(MacroRangeState state) =>
+    state.rangeHigh := na
+    state.rangeLow := na
+    state.locked := false
+    state.highSwept := false
+    state.lowSwept := false
+    state.highSweepBar := na
+    state.lowSweepBar := na
+    0
+
+// The range is built from bars timestamped 09:50 through 10:09. The 10:10 bar is
+// post-range and may record a wick sweep. Times are supplied as New York minutes.
+export updateMacroRange(MacroRangeState state, bool enabled, int currentMinute, float highValue, float lowValue, int currentBar, int rangeStartMinute, int rangeEndMinute) =>
+    if enabled
+        bool insideRange = currentMinute >= rangeStartMinute and currentMinute < rangeEndMinute
+        if insideRange
+            state.rangeHigh := na(state.rangeHigh) ? highValue : math.max(state.rangeHigh, highValue)
+            state.rangeLow := na(state.rangeLow) ? lowValue : math.min(state.rangeLow, lowValue)
+        if currentMinute >= rangeEndMinute and not state.locked and not na(state.rangeHigh) and not na(state.rangeLow)
+            state.locked := true
+        if state.locked and currentMinute >= rangeEndMinute
+            bool highSweepNow = highValue > state.rangeHigh
+            bool lowSweepNow = lowValue < state.rangeLow
+            if highSweepNow and not state.highSwept
+                state.highSwept := true
+                state.highSweepBar := currentBar
+            if lowSweepNow and not state.lowSwept
+                state.lowSwept := true
+                state.lowSweepBar := currentBar
+    0
+
+export macroRangeEvent(MacroRangeState state) =>
+    not state.locked ? SWEEP_NA : state.highSwept and state.lowSwept ? SWEEP_BOTH : state.highSwept ? SWEEP_HIGH_ONLY : state.lowSwept ? SWEEP_LOW_ONLY : SWEEP_NONE
+
+isDirection(int value) =>
+    value == DIR_BULL or value == DIR_BEAR
+
+isLocation(int value) =>
+    value == LOC_ABOVE or value == LOC_INSIDE or value == LOC_BELOW
+
+isSweep(int value) =>
+    value == SWEEP_NONE or value == SWEEP_LOW_ONLY or value == SWEEP_HIGH_ONLY or value == SWEEP_BOTH
+
+isStructureForEvent(int sweepEvent, int structure) =>
+    sweepEvent == SWEEP_BOTH ?
+         (structure == STRUCT_NONE or structure == STRUCT_BULL or structure == STRUCT_BEAR or structure == STRUCT_BALANCED or structure == STRUCT_UNSTABLE) :
+         (structure == STRUCT_NONE or structure == STRUCT_BULL or structure == STRUCT_BEAR)
+
+normalState(int direction) =>
+    direction == DIR_BULL ? STATE_NORMAL_BULL : STATE_NORMAL_BEAR
+
+transitionState(int direction) =>
+    direction == DIR_BULL ? STATE_TRANSITION_BULL : STATE_TRANSITION_BEAR
+
+judasState(int sessionDirection) =>
+    sessionDirection == DIR_BULL ? STATE_JUDAS_DOWN : STATE_JUDAS_UP
+
+macroRelationOf(int sessionDirection, int macroDirection) =>
+    sessionDirection == macroDirection ? REL_AGREES : REL_OPPOSES
+
+macroStatusOf(int macroDirection, int macroLocation) =>
+    macroLocation == LOC_INSIDE ? MACRO_TESTING :
+     macroDirection == DIR_BULL ? (macroLocation == LOC_ABOVE ? MACRO_SUPPORTIVE : MACRO_FAILED) :
+     (macroLocation == LOC_BELOW ? MACRO_SUPPORTIVE : MACRO_FAILED)
+
+sessionRespectContradiction(int sessionDirection, bool sessionRespected, int sessionLocation) =>
+    sessionRespected and ((sessionDirection == DIR_BULL and sessionLocation == LOC_BELOW) or (sessionDirection == DIR_BEAR and sessionLocation == LOC_ABOVE))
+
+compositeOf(int sessionLocation, int macroLocation, bool invalidInput) =>
+    int result = COMP_NA
+    if invalidInput
+        result := COMP_INVALID_INPUT
+    else if sessionLocation == LOC_ABOVE and macroLocation == LOC_ABOVE
+        result := COMP_BULL_CONFIRMED
+    else if sessionLocation == LOC_BELOW and macroLocation == LOC_BELOW
+        result := COMP_BEAR_CONFIRMED
+    else if (sessionLocation == LOC_ABOVE and macroLocation == LOC_INSIDE) or (sessionLocation == LOC_INSIDE and macroLocation == LOC_ABOVE)
+        result := COMP_BULL_LEAN
+    else if (sessionLocation == LOC_BELOW and macroLocation == LOC_INSIDE) or (sessionLocation == LOC_INSIDE and macroLocation == LOC_BELOW)
+        result := COMP_BEAR_LEAN
+    else if sessionLocation == LOC_INSIDE and macroLocation == LOC_INSIDE
+        result := COMP_NEUTRAL
+    else
+        result := COMP_LOCATION_CONFLICT
+    result
+
+compositeDirection(int compositeLocation) =>
+    compositeLocation == COMP_BULL_CONFIRMED or compositeLocation == COMP_BULL_LEAN ? DIR_BULL :
+     compositeLocation == COMP_BEAR_CONFIRMED or compositeLocation == COMP_BEAR_LEAN ? DIR_BEAR : DIR_NONE
+
+export locationFromPrice(float price, float zoneBottom, float zoneTop) =>
+    not na(price) and not na(zoneBottom) and not na(zoneTop) and zoneBottom <= zoneTop ?
+         (price > zoneTop ? LOC_ABOVE : price < zoneBottom ? LOC_BELOW : LOC_INSIDE) : LOC_NA
+
+export resolve(
+    int sessionDirection,
+    int macroDirection,
+    bool sessionRespected,
+    int sessionLocation,
+    int macroLocation,
+    int sweepEvent,
+    int structure
+) =>
+    bool domainValid = isDirection(sessionDirection) and isDirection(macroDirection) and isLocation(sessionLocation) and isLocation(macroLocation) and isSweep(sweepEvent) and isStructureForEvent(sweepEvent, structure)
+    bool contradictoryRespect = domainValid and sessionRespectContradiction(sessionDirection, sessionRespected, sessionLocation)
+    bool validInput = domainValid and not contradictoryRespect
+
+    int macroRelation = domainValid ? macroRelationOf(sessionDirection, macroDirection) : REL_NA
+    int macroStatus = domainValid ? macroStatusOf(macroDirection, macroLocation) : MACRO_NA
+    int compositeLocation = domainValid ? compositeOf(sessionLocation, macroLocation, contradictoryRespect) : COMP_NA
+    int baseCandidate = domainValid and not contradictoryRespect ? compositeDirection(compositeLocation) : DIR_NONE
+
+    int baseState = STATE_WAITING
+    if not domainValid
+        baseState := STATE_INVALID_INPUT
+    else if contradictoryRespect
+        baseState := STATE_INVALID_INPUT
+    else if sessionRespected
+        baseState := baseCandidate == DIR_NONE or baseCandidate == sessionDirection ? normalState(sessionDirection) : judasState(sessionDirection)
+    else
+        baseState := baseCandidate == DIR_NONE ? STATE_TWO_SIDED : transitionState(baseCandidate)
+
+    int candidateBias = baseCandidate
+    int approvedBias = DIR_NONE
+    int resolvedState = baseState
+    int terminalAction = ACTION_WAIT
+    int reasonCode = REASON_WAIT_NO_TRIGGER
+
+    if not validInput
+        candidateBias := DIR_NONE
+        approvedBias := DIR_NONE
+        resolvedState := STATE_INVALID_INPUT
+        terminalAction := ACTION_NO_TRADE
+        reasonCode := REASON_INVALID_SESSION_RESPECT
+    else if sweepEvent == SWEEP_BOTH
+        if structure == STRUCT_NONE
+            candidateBias := baseCandidate
+            approvedBias := DIR_NONE
+            resolvedState := STATE_TWO_SIDED
+            terminalAction := ACTION_WAIT
+            reasonCode := REASON_TWO_SIDED_WAIT
+        else if structure == STRUCT_BALANCED
+            candidateBias := baseCandidate
+            approvedBias := DIR_NONE
+            resolvedState := STATE_TWO_SIDED
+            terminalAction := ACTION_WAIT
+            reasonCode := REASON_BOTH_BALANCED
+        else if structure == STRUCT_UNSTABLE
+            candidateBias := baseCandidate
+            approvedBias := DIR_NONE
+            resolvedState := STATE_TWO_SIDED
+            terminalAction := ACTION_NO_TRADE
+            reasonCode := REASON_BOTH_UNSTABLE
+        else
+            candidateBias := structure
+            if sessionRespected
+                approvedBias := sessionDirection
+                if structure == sessionDirection
+                    resolvedState := normalState(sessionDirection)
+                    terminalAction := sessionDirection == DIR_BULL ? ACTION_BUY_ELIGIBLE : ACTION_SELL_ELIGIBLE
+                    reasonCode := REASON_BOTH_ALIGNED
+                else
+                    resolvedState := baseState
+                    terminalAction := ACTION_NO_TRADE_COUNTERTREND
+                    reasonCode := REASON_BOTH_COUNTERTREND
+            else
+                approvedBias := structure
+                resolvedState := normalState(structure)
+                terminalAction := structure == DIR_BULL ? ACTION_BUY_ELIGIBLE : ACTION_SELL_ELIGIBLE
+                reasonCode := REASON_BOTH_ALIGNED
+    else if sessionRespected
+        approvedBias := sessionDirection
+        if structure == STRUCT_NONE
+            candidateBias := baseCandidate
+            resolvedState := baseState
+            terminalAction := ACTION_WAIT
+            reasonCode := REASON_WAIT_NO_TRIGGER
+        else
+            candidateBias := structure
+            if structure == sessionDirection
+                resolvedState := normalState(sessionDirection)
+                terminalAction := sessionDirection == DIR_BULL ? ACTION_BUY_ELIGIBLE : ACTION_SELL_ELIGIBLE
+                reasonCode := REASON_ALIGNED_STRUCTURE
+            else
+                resolvedState := baseState
+                terminalAction := ACTION_NO_TRADE_COUNTERTREND
+                reasonCode := REASON_COUNTERTREND_STRUCTURE
+    else if baseState == STATE_TWO_SIDED
+        candidateBias := DIR_NONE
+        approvedBias := DIR_NONE
+        resolvedState := STATE_TWO_SIDED
+        terminalAction := ACTION_WAIT
+        reasonCode := REASON_TWO_SIDED_WAIT
+    else
+        candidateBias := baseCandidate
+        if structure == STRUCT_NONE
+            approvedBias := DIR_NONE
+            resolvedState := baseState
+            terminalAction := ACTION_WAIT
+            reasonCode := REASON_TRANSITION_WAIT
+        else if structure == baseCandidate
+            approvedBias := baseCandidate
+            resolvedState := normalState(baseCandidate)
+            terminalAction := baseCandidate == DIR_BULL ? ACTION_BUY_ELIGIBLE : ACTION_SELL_ELIGIBLE
+            reasonCode := REASON_ALIGNED_STRUCTURE
+        else
+            approvedBias := DIR_NONE
+            resolvedState := STATE_TWO_SIDED
+            terminalAction := ACTION_NO_TRADE
+            reasonCode := REASON_TRANSITION_CONFLICT
+
+    CatalogDecision.new(
+        validInput,
+        macroRelation,
+        macroStatus,
+        compositeLocation,
+        baseState,
+        candidateBias,
+        approvedBias,
+        resolvedState,
+        terminalAction,
+        reasonCode
+    )
+
+export resolveFromPrices(
+    int sessionDirection,
+    int macroDirection,
+    bool sessionRespected,
+    float closePrice,
+    float sessionBottom,
+    float sessionTop,
+    float macroBottom,
+    float macroTop,
+    int sweepEvent,
+    int structure
+) =>
+    int sessionLocation = locationFromPrice(closePrice, sessionBottom, sessionTop)
+    int macroLocation = locationFromPrice(closePrice, macroBottom, macroTop)
+    resolve(sessionDirection, macroDirection, sessionRespected, sessionLocation, macroLocation, sweepEvent, structure)
+
+export directionText(int direction) =>
+    direction == DIR_BULL ? "BULLISH" : direction == DIR_BEAR ? "BEARISH" : "NONE"
+
+export relationText(int relation) =>
+    relation == REL_AGREES ? "AGREES" : relation == REL_OPPOSES ? "OPPOSES" : "N/A"
+
+export macroStatusText(int status) =>
+    status == MACRO_SUPPORTIVE ? "SUPPORTIVE" : status == MACRO_TESTING ? "TESTING" : status == MACRO_FAILED ? "FAILED" : "N/A"
+
+export compositeText(int compositeLocation) =>
+    compositeLocation == COMP_BULL_CONFIRMED ? "BULLISH_CONFIRMED" :
+     compositeLocation == COMP_BULL_LEAN ? "BULLISH_LEAN" :
+     compositeLocation == COMP_NEUTRAL ? "NEUTRAL" :
+     compositeLocation == COMP_BEAR_LEAN ? "BEARISH_LEAN" :
+     compositeLocation == COMP_BEAR_CONFIRMED ? "BEARISH_CONFIRMED" :
+     compositeLocation == COMP_LOCATION_CONFLICT ? "LOCATION_CONFLICT" :
+     compositeLocation == COMP_INVALID_INPUT ? "INVALID_INPUT" : "N/A"
+
+export stateText(int state) =>
+    state == STATE_NORMAL_BULL ? "NORMAL_BULL" :
+     state == STATE_NORMAL_BEAR ? "NORMAL_BEAR" :
+     state == STATE_JUDAS_DOWN ? "JUDAS_DOWN" :
+     state == STATE_JUDAS_UP ? "JUDAS_UP" :
+     state == STATE_TRANSITION_BULL ? "TRANSITION_TO_BULL" :
+     state == STATE_TRANSITION_BEAR ? "TRANSITION_TO_BEAR" :
+     state == STATE_TWO_SIDED ? "TWO_SIDED_UNRESOLVED" :
+     state == STATE_INVALID_INPUT ? "INVALID_INPUT" : "WAITING"
+
+export sweepText(int sweepEvent) =>
+    sweepEvent == SWEEP_NONE ? "NONE" : sweepEvent == SWEEP_LOW_ONLY ? "LOW_ONLY" : sweepEvent == SWEEP_HIGH_ONLY ? "HIGH_ONLY" : sweepEvent == SWEEP_BOTH ? "BOTH" : "N/A"
+
+export structureText(int structure) =>
+    structure == STRUCT_BULL ? "BULLISH" : structure == STRUCT_BEAR ? "BEARISH" : structure == STRUCT_BALANCED ? "BALANCED" : structure == STRUCT_UNSTABLE ? "UNSTABLE" : "NONE"
+
+export actionText(int action) =>
+    action == ACTION_BUY_ELIGIBLE ? "BUY_ELIGIBLE" :
+     action == ACTION_SELL_ELIGIBLE ? "SELL_ELIGIBLE" :
+     action == ACTION_NO_TRADE ? "NO_TRADE" :
+     action == ACTION_NO_TRADE_COUNTERTREND ? "NO_TRADE_COUNTERTREND" : "WAIT"
+
+export reasonText(int reasonCode) =>
+    reasonCode == REASON_INVALID_SESSION_RESPECT ? "Session respect contradicts the completed close location." :
+     reasonCode == REASON_ALIGNED_STRUCTURE ? "Completed structure aligns with approved narrative." :
+     reasonCode == REASON_COUNTERTREND_STRUCTURE ? "Completed structure is countertrend to a respected Session FPI." :
+     reasonCode == REASON_TRANSITION_WAIT ? "Location nominates a transition; aligned structure is still required." :
+     reasonCode == REASON_TRANSITION_CONFLICT ? "Completed structure conflicts with the nominated transition." :
+     reasonCode == REASON_TWO_SIDED_WAIT ? "Location or both-sweep evidence remains unresolved." :
+     reasonCode == REASON_BOTH_BALANCED ? "Both boundary structures hold; neither side is authorized." :
+     reasonCode == REASON_BOTH_UNSTABLE ? "Both boundary structures failed; no trade." :
+     reasonCode == REASON_BOTH_ALIGNED ? "Both-sweep structural test authorizes the resolved side." :
+     reasonCode == REASON_BOTH_COUNTERTREND ? "Both-sweep candidate is blocked by the respected Session FPI." :
+     "No aligned completed trigger is available."
