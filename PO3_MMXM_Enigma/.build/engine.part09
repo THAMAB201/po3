@@ -1,0 +1,59 @@
+    if cfg.showCleanTradeText and campaignLegNow and not na(campaignLegPrice)
+        label.new(x=bar_index, y=campaignLegPrice, text=campaignLegDirection == 1 ? "MMBM LEG" : "MMSM LEG", yloc=yloc.price, style=label.style_none, textcolor=campaignLegDirection == 1 ? color.new(#2b8a3e, 0) : color.new(#c92a2a, 0), size=size.large, textalign=text.align_center)
+
+    if drawExecutionTriangles and drawEntryTriangleNow and drawEntryTriangleDirection != 0 and not na(drawEntryTrianglePrice)
+        color entryColor = drawEntryTriangleDirection == 1 ? color.new(#2b8a3e, 0) : color.new(#c92a2a, 0)
+        float entryTriangleHeight = math.max(syminfo.mintick * 12.0, math.max(high - low, syminfo.mintick * 4.0) * 0.45)
+        float entryTriangleBase = drawEntryTriangleDirection == 1 ? drawEntryTrianglePrice - entryTriangleHeight : drawEntryTrianglePrice + entryTriangleHeight
+        // For a buy, the upper tip is exactly the entry price. For a sell, the lower tip is exact.
+        line.new(x1=bar_index - 1, y1=entryTriangleBase, x2=bar_index, y2=drawEntryTrianglePrice, xloc=xloc.bar_index, extend=extend.none, color=entryColor, width=3)
+        line.new(x1=bar_index, y1=drawEntryTrianglePrice, x2=bar_index + 1, y2=entryTriangleBase, xloc=xloc.bar_index, extend=extend.none, color=entryColor, width=3)
+        line.new(x1=bar_index - 1, y1=entryTriangleBase, x2=bar_index + 1, y2=entryTriangleBase, xloc=xloc.bar_index, extend=extend.none, color=entryColor, width=3)
+        string entryText = (drawEntryTriangleDirection == 1 ? "BUY " : "SELL ") + priceText(drawEntryTrianglePrice)
+        label.new(x=bar_index, y=drawEntryTriangleDirection == 1 ? entryTriangleBase - entryTriangleHeight * 0.20 : entryTriangleBase + entryTriangleHeight * 0.20, text=entryText, yloc=yloc.price, style=label.style_none, textcolor=entryColor, size=size.small, textalign=text.align_center)
+
+    if drawExecutionTriangles and drawExitTriangleNow and drawExitTriangleDirection != 0 and not na(drawExitTrianglePrice)
+        color exitColor = color.new(color.black, 0)
+        float exitTriangleHeight = math.max(syminfo.mintick * 12.0, math.max(high - low, syminfo.mintick * 4.0) * 0.45)
+        // Close-buy points down; close-sell points up. The pointed tip is the exact exit price.
+        bool exitPointsUp = drawExitTriangleDirection == -1
+        float exitTriangleBase = exitPointsUp ? drawExitTrianglePrice - exitTriangleHeight : drawExitTrianglePrice + exitTriangleHeight
+        line.new(x1=bar_index - 1, y1=exitTriangleBase, x2=bar_index, y2=drawExitTrianglePrice, xloc=xloc.bar_index, extend=extend.none, color=exitColor, width=3)
+        line.new(x1=bar_index, y1=drawExitTrianglePrice, x2=bar_index + 1, y2=exitTriangleBase, xloc=xloc.bar_index, extend=extend.none, color=exitColor, width=3)
+        line.new(x1=bar_index - 1, y1=exitTriangleBase, x2=bar_index + 1, y2=exitTriangleBase, xloc=xloc.bar_index, extend=extend.none, color=exitColor, width=3)
+        string exitText = (drawExitTriangleDirection == 1 ? "CLOSE BUY " : "CLOSE SELL ") + priceText(drawExitTrianglePrice)
+        label.new(x=bar_index, y=exitPointsUp ? exitTriangleBase - exitTriangleHeight * 0.20 : exitTriangleBase + exitTriangleHeight * 0.20, text=exitText, yloc=yloc.price, style=label.style_none, textcolor=exitColor, size=size.small, textalign=text.align_center)
+
+    if drawClosedTradeLines and drawExitTriangleNow and drawExitTriangleDirection != 0 and not na(drawClosedTradeEntryPrice) and not na(drawExitTrianglePrice) and not na(drawClosedTradeEntryBar)
+        color pathColor = drawExitTriangleDirection == 1 ? color.new(#2b8a3e, 0) : color.new(#c92a2a, 0)
+        line.new(x1=drawClosedTradeEntryBar, y1=drawClosedTradeEntryPrice, x2=bar_index, y2=drawExitTrianglePrice, xloc=xloc.bar_index, extend=extend.none, color=pathColor, style=line.style_dashed, width=2)
+
+    if cfg.showCatalogAuditLabel and barstate.islast
+        if not na(catalogAuditLabel)
+            label.delete(catalogAuditLabel)
+        color catalogLabelColor = not catalogAvailable ? color.new(#495057, 15) : catalogDirectionAllowed ? color.new(#2b8a3e, 10) : color.new(#c92a2a, 10)
+        catalogAuditLabel := label.new(x=bar_index, y=high + math.max(high - low, syminfo.mintick * 12.0), text=catalogSummary, yloc=yloc.price, style=label.style_label_down, color=catalogLabelColor, textcolor=color.white, size=size.small)
+    else if not cfg.showCatalogAuditLabel and not na(catalogAuditLabel)
+        label.delete(catalogAuditLabel)
+        catalogAuditLabel := na
+
+    // Update after signal evaluation so a breakout means a confirmed close beyond
+    // the session extreme that existed before this candle.
+    if inSession and barstate.isconfirmed
+        sessionExtremeHigh := na(sessionExtremeHigh) ? high : math.max(sessionExtremeHigh, high)
+        sessionExtremeLow := na(sessionExtremeLow) ? low : math.min(sessionExtremeLow, low)
+
+    EnigmaOutput.new(
+        buyEntryNow,
+        sellEntryNow,
+        exitNow,
+        closedDirectionNow,
+        catalogAvailable,
+        catalogDirectionAllowed,
+        catalogDecision.approvedBias,
+        catalogDecision.resolvedState,
+        catalogDecision.terminalAction,
+        catalogSweepEvent,
+        catalogStructure,
+        catalogSummary
+    )
