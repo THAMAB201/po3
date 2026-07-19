@@ -3,8 +3,8 @@
 //@version=6
 strategy("PO3 MMXM Enigma", shorttitle="PO3 MMXM Enigma", overlay=true, max_labels_count=500, max_boxes_count=500, max_lines_count=500, initial_capital=100000, pyramiding=0, process_orders_on_close=true, calc_on_order_fills=false, fill_orders_on_standard_ohlc=true, default_qty_type=strategy.fixed, default_qty_value=5, margin_long=1, margin_short=1, commission_type=strategy.commission.cash_per_contract, commission_value=0)
 
-// Publish PO3MMXMEnigmaExecutionEngine privately as version 2 before loading this strategy.
-import SunovaBeach/PO3MMXMEnigmaExecutionEngine/2 as enigma
+// Publish PO3MMXMEnigmaExecutionEngine privately as version 3 before loading this strategy.
+import SunovaBeach/PO3MMXMEnigmaExecutionEngine/3 as enigma
 
 string G_ENGINE = "FPI Engine"
 bool enableBot = input.bool(true, "Enable Bot", group=G_ENGINE, display=display.none)
@@ -14,7 +14,7 @@ string G_SEQUENCE = "Sequence / Reversal Foundations"
 bool enableSequenceEngine = input.bool(true, "Enable Sequence Foundation Engine", group=G_SEQUENCE, display=display.none)
 bool requireFoundationObImbPair = input.bool(true, "Require OB + IMB Foundation Pair", group=G_SEQUENCE, display=display.none)
 bool allowOpposingImbFoundationPair = input.bool(true, "Allow Opposing IMB Reclaim / Retest + Aligned OB Pair", group=G_SEQUENCE, display=display.none)
-bool allowControllerAlignedFoundationEntry = input.bool(true, "Allow Controller-Aligned Foundation Entry Before Local FPI Reclaim", group=G_SEQUENCE, display=display.none)
+bool allowControllerAlignedFoundationEntry = input.bool(true, "Allow Session-Aligned Post-OB IMB Entry Before Macro Reclaim", group=G_SEQUENCE, display=display.none)
 bool allowEarlyCounterControllerFoundationEntry = input.bool(true, "Allow Qualified Counter-Controller Foundation Entry Before Macro Reclaim", group=G_SEQUENCE, display=display.none)
 float maximumEarlyFoundationExtensionPoints = input.float(24.0, "Maximum Entry Extension From Confirmed OB", minval=1.0, step=0.25, group=G_SEQUENCE, display=display.none)
 bool requireFreshFoundationSignal = input.bool(true, "Require Foundation Entry On Its Confirmation Bar", group=G_SEQUENCE, display=display.none)
