@@ -1,0 +1,117 @@
+        activeSourceKind := SOURCE_NONE
+        delayedFpiReversal := false
+
+    if cfg.forceFlatBy450 and sessionEnded and barstate.isconfirmed and strategy.position_size != 0
+        int closingDirection = positionDirection()
+        closedDirectionNow := closingDirection
+        strategy.cancel(PROTECTION_ID)
+        if recordedTradeOpen
+            recordedTp := close
+            float fallbackPoints = tradePoints(recordedTradeDirection, recordedEntry, close)
+            sessionClosedPoints += fallbackPoints
+            if recordedWindow >= 0 and recordedSlot >= 0
+                writeLedgerRow(ledger, recordedWindow, recordedSlot, recordedTradeDirection, recordedEntry, recordedSl, recordedTp, fallbackPoints, false, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+            drawExitTriangleNow := true
+            drawExitTriangleDirection := recordedTradeDirection
+            drawExitTrianglePrice := close
+            drawClosedTradeEntryBar := recordedEntryBar
+            drawClosedTradeEntryPrice := recordedEntry
+            recordedTradeOpen := false
+        strategy.close_all(comment=closeSideText(closingDirection))
+        exitNow := true
+        activeFpiValid := false
+        activeSourceKind := SOURCE_NONE
+        delayedFpiReversal := false
+        campaignHoldAnchorFound := false
+        campaignHoldAnchorWindow := -1
+        campaignHoldAnchorTop := na
+        campaignHoldAnchorBottom := na
+        fpiRequalificationWatch := false
+        fpiRequalificationAcceptanceConfirmed := false
+        fpiRequalificationAcceptanceBar := na
+
+    // Resting protection: the full three-candle FPI extreme, fixed 500-point target,
+    // and entry price only after 80 favorable points.
+    if recordedTradeOpen and cfg.enableBot and isOneMinute and entryTimeAllowed and barstate.isconfirmed
+        float protectiveStop = recordedBreakEvenArmed ? recordedEntry : recordedSl
+        strategy.exit(PROTECTION_ID, from_entry=ORDER_ID, stop=protectiveStop, limit=recordedTarget, comment=recordedBreakEvenArmed ? "BREAK EVEN / 500 TP" : "FPI 3-CANDLE SL / 500 TP")
+
+    // Centered session-wide confluence and result boxes remain beneath every ledger.
+    // The confluence row reports the exact surviving stack in its economic order.
+    if isOneMinute and not na(sessionPriceLow) and (inSession or sessionEnded)
+        float confluenceBoxTop = sessionPriceLow - cfg.tradeTableGap - cfg.tradeTableHeight - cfg.tradeTableGap
+        float confluenceBoxBottom = confluenceBoxTop - cfg.tradeTableHeight
+        if drawConfluenceStatus and not na(confluenceStatusBox)
+            box.set_top(confluenceStatusBox, confluenceBoxTop)
+            box.set_bottom(confluenceStatusBox, confluenceBoxBottom)
+            box.set_text(confluenceStatusBox, confluenceSummary(sessionAnchorDirection, sessionFpiRegime, sessionConfluenceValidCount, sessionConfluenceMasterBoundary, confluenceBoundary, confluenceValid, reversalModeActive, reversalModeDirection, validSupportIntervalCount, validResistanceIntervalCount))
+            color confluenceStatusColor = reversalModeActive ? (reversalModeDirection == 1 ? color.new(#2b8a3e, 12) : color.new(#c92a2a, 12)) : sessionConfluenceHoldActive ? color.new(#0b7285, 12) : sessionFpiRegime == SESSION_REGIME_ALIGNED ? color.new(#2b8a3e, 12) : sessionFpiRegime == SESSION_REGIME_JUDAS ? color.new(#c92a2a, 12) : color.new(#495057, 12)
+            box.set_bgcolor(confluenceStatusBox, confluenceStatusColor)
+        if drawSessionResults and not na(sessionResultBox)
+            float sessionResultsTop = drawConfluenceStatus ? confluenceBoxBottom - cfg.tradeTableGap : confluenceBoxTop
+            float sessionResultsBottom = sessionResultsTop - cfg.tradeTableHeight
+            box.set_top(sessionResultBox, sessionResultsTop)
+            box.set_bottom(sessionResultBox, sessionResultsBottom)
+            box.set_text(sessionResultBox, "NY SESSION RESULTS\n" + signedPointsText(sessionClosedPoints))
+            box.set_bgcolor(sessionResultBox, resultColor(sessionClosedPoints))
+            if not na(dailyTradeLogBox)
+                int totalDailyTrades = dailyTradeCount(ledger)
+                float dailyLogTop = sessionResultsBottom - cfg.tradeTableGap
+                float dailyLogHeight = cfg.tradeTableHeight * math.max(2.0, 1.0 + totalDailyTrades * 0.55)
+                box.set_top(dailyTradeLogBox, dailyLogTop)
+                box.set_bottom(dailyTradeLogBox, dailyLogTop - dailyLogHeight)
+                box.set_text(dailyTradeLogBox, dailyTradeLogText(ledger))
+
+    // -----------------------------------------------------------------------------------------------------
+    // Clean execution text. Native TradingView quantity markers must be disabled in the strategy Style UI.
+    // -----------------------------------------------------------------------------------------------------
+    float executionTextGap = math.max((high - low) * 0.35, syminfo.mintick * 8.0)
+    if cfg.showCleanTradeText and exitNow and closedDirectionNow != 0
+        bool closedBuy = closedDirectionNow == 1
+        label.new(x=bar_index, y=closedBuy ? high + executionTextGap : low - executionTextGap, text=closeSideText(closedDirectionNow), yloc=yloc.price, style=label.style_none, textcolor=color.new(color.black, 0), size=size.large, textalign=text.align_center)
+    if cfg.showCleanTradeText and buyEntryNow
+        label.new(x=bar_index, y=low - executionTextGap * (exitNow ? 2.0 : 1.0), text="BUY", yloc=yloc.price, style=label.style_none, textcolor=color.new(#2b8a3e, 0), size=size.huge, textalign=text.align_center)
+    if cfg.showCleanTradeText and sellEntryNow
+        label.new(x=bar_index, y=high + executionTextGap * (exitNow ? 2.0 : 1.0), text="SELL", yloc=yloc.price, style=label.style_none, textcolor=color.new(#c92a2a, 0), size=size.huge, textalign=text.align_center)
+    if cfg.showCleanTradeText and campaignLegNow and not na(campaignLegPrice)
+        label.new(x=bar_index, y=campaignLegPrice, text=campaignLegDirection == 1 ? "MMBM LEG" : "MMSM LEG", yloc=yloc.price, style=label.style_none, textcolor=campaignLegDirection == 1 ? color.new(#2b8a3e, 0) : color.new(#c92a2a, 0), size=size.large, textalign=text.align_center)
+
+    if drawExecutionTriangles and drawEntryTriangleNow and drawEntryTriangleDirection != 0 and not na(drawEntryTrianglePrice)
+        color entryColor = drawEntryTriangleDirection == 1 ? color.new(#2b8a3e, 0) : color.new(#c92a2a, 0)
+        float entryTriangleHeight = math.max(syminfo.mintick * 12.0, math.max(high - low, syminfo.mintick * 4.0) * 0.45)
+        float entryTriangleBase = drawEntryTriangleDirection == 1 ? drawEntryTrianglePrice - entryTriangleHeight : drawEntryTrianglePrice + entryTriangleHeight
+        // For a buy, the upper tip is exactly the entry price. For a sell, the lower tip is exact.
+        line.new(x1=bar_index - 1, y1=entryTriangleBase, x2=bar_index, y2=drawEntryTrianglePrice, xloc=xloc.bar_index, extend=extend.none, color=entryColor, width=3)
+        line.new(x1=bar_index, y1=drawEntryTrianglePrice, x2=bar_index + 1, y2=entryTriangleBase, xloc=xloc.bar_index, extend=extend.none, color=entryColor, width=3)
+        line.new(x1=bar_index - 1, y1=entryTriangleBase, x2=bar_index + 1, y2=entryTriangleBase, xloc=xloc.bar_index, extend=extend.none, color=entryColor, width=3)
+        string entryText = (drawEntryTriangleDirection == 1 ? "BUY " : "SELL ") + priceText(drawEntryTrianglePrice)
+        label.new(x=bar_index, y=drawEntryTriangleDirection == 1 ? entryTriangleBase - entryTriangleHeight * 0.20 : entryTriangleBase + entryTriangleHeight * 0.20, text=entryText, yloc=yloc.price, style=label.style_none, textcolor=entryColor, size=size.small, textalign=text.align_center)
+
+    if drawExecutionTriangles and drawExitTriangleNow and drawExitTriangleDirection != 0 and not na(drawExitTrianglePrice)
+        color exitColor = color.new(color.black, 0)
+        float exitTriangleHeight = math.max(syminfo.mintick * 12.0, math.max(high - low, syminfo.mintick * 4.0) * 0.45)
+        // Close-buy points down; close-sell points up. The pointed tip is the exact exit price.
+        bool exitPointsUp = drawExitTriangleDirection == -1
+        float exitTriangleBase = exitPointsUp ? drawExitTrianglePrice - exitTriangleHeight : drawExitTrianglePrice + exitTriangleHeight
+        line.new(x1=bar_index - 1, y1=exitTriangleBase, x2=bar_index, y2=drawExitTrianglePrice, xloc=xloc.bar_index, extend=extend.none, color=exitColor, width=3)
+        line.new(x1=bar_index, y1=drawExitTrianglePrice, x2=bar_index + 1, y2=exitTriangleBase, xloc=xloc.bar_index, extend=extend.none, color=exitColor, width=3)
+        line.new(x1=bar_index - 1, y1=exitTriangleBase, x2=bar_index + 1, y2=exitTriangleBase, xloc=xloc.bar_index, extend=extend.none, color=exitColor, width=3)
+        string exitText = (drawExitTriangleDirection == 1 ? "CLOSE BUY " : "CLOSE SELL ") + priceText(drawExitTrianglePrice)
+        label.new(x=bar_index, y=exitPointsUp ? exitTriangleBase - exitTriangleHeight * 0.20 : exitTriangleBase + exitTriangleHeight * 0.20, text=exitText, yloc=yloc.price, style=label.style_none, textcolor=exitColor, size=size.small, textalign=text.align_center)
+
+    if drawClosedTradeLines and drawExitTriangleNow and drawExitTriangleDirection != 0 and not na(drawClosedTradeEntryPrice) and not na(drawExitTrianglePrice) and not na(drawClosedTradeEntryBar)
+        color pathColor = drawExitTriangleDirection == 1 ? color.new(#2b8a3e, 0) : color.new(#c92a2a, 0)
+        line.new(x1=drawClosedTradeEntryBar, y1=drawClosedTradeEntryPrice, x2=bar_index, y2=drawExitTrianglePrice, xloc=xloc.bar_index, extend=extend.none, color=pathColor, style=line.style_dashed, width=2)
+
+    // Update after signal evaluation so a breakout means a confirmed close beyond
+    // the session extreme that existed before this candle.
+    if inSession and barstate.isconfirmed
+        sessionExtremeHigh := na(sessionExtremeHigh) ? high : math.max(sessionExtremeHigh, high)
+        sessionExtremeLow := na(sessionExtremeLow) ? low : math.min(sessionExtremeLow, low)
+
+    EnigmaOutput.new(
+        buyEntryNow,
+        sellEntryNow,
+        exitNow,
+        closedDirectionNow
+    )
