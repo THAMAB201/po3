@@ -1,0 +1,39 @@
+name: Build stable PO3 MMXM Enigma files
+
+on:
+  push:
+    branches:
+      - enigma-stable-update
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build and validate complete Pine files
+        run: python enigma_build/build_enigma.py
+
+      - name: Commit generated files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PO3_MMXM_Enigma_Core.pine PO3_MMXM_Enigma_Strategy.pine enigma_build/build_report.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "Generate stable PO3 MMXM Enigma files"
+            git push
+          fi
+
+      - name: Upload complete Pine files
+        uses: actions/upload-artifact@v4
+        with:
+          name: PO3-MMXM-Enigma-files
+          path: |
+            PO3_MMXM_Enigma_Core.pine
+            PO3_MMXM_Enigma_Strategy.pine
+            enigma_build/build_report.txt
