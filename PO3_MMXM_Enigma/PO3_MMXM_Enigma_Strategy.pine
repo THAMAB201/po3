@@ -1,0 +1,121 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © SunovaBeach
+//@version=6
+strategy("PO3 MMXM Enigma", shorttitle="PO3 MMXM Enigma", overlay=true, max_labels_count=500, max_boxes_count=500, max_lines_count=500, initial_capital=100000, pyramiding=0, process_orders_on_close=true, calc_on_order_fills=false, fill_orders_on_standard_ohlc=true, default_qty_type=strategy.fixed, default_qty_value=5, margin_long=1, margin_short=1, commission_type=strategy.commission.cash_per_contract, commission_value=0)
+
+// Publish PO3MMXMEnigmaExecutionEngine privately as version 1 before loading this strategy.
+import SunovaBeach/PO3MMXMEnigmaExecutionEngine/1 as enigma
+
+string G_ENGINE = "FPI Engine"
+bool enableBot = input.bool(true, "Enable Bot", group=G_ENGINE, display=display.none)
+float orderQuantity = input.float(5.0, "Order Quantity", minval=1.0, step=1.0, group=G_ENGINE, display=display.none)
+bool forceFlatBy450 = input.bool(true, "Force Flat By 4:50 PM New York", group=G_ENGINE, display=display.none)
+string G_SEQUENCE = "Sequence / Reversal Foundations"
+bool enableSequenceEngine = input.bool(true, "Enable Sequence Foundation Engine", group=G_SEQUENCE, display=display.none)
+bool requireFoundationObImbPair = input.bool(true, "Require OB + IMB Foundation Pair", group=G_SEQUENCE, display=display.none)
+bool allowOpposingImbFoundationPair = input.bool(true, "Allow Opposing IMB Retest + Aligned OB Pair", group=G_SEQUENCE, display=display.none)
+bool allowControllerAlignedFoundationEntry = input.bool(true, "Allow Controller-Aligned Foundation Entry Before FPI Reclaim", group=G_SEQUENCE, display=display.none)
+bool allowEarlyCounterControllerFoundationEntry = input.bool(true, "Allow Qualified Counter-Controller Foundation Entry Before Macro Reclaim", group=G_SEQUENCE, display=display.none)
+float maximumEarlyFoundationExtensionPoints = input.float(24.0, "Maximum Entry Extension From Confirmed OB", minval=1.0, step=0.25, group=G_SEQUENCE, display=display.none)
+bool requireFreshFoundationSignal = input.bool(true, "Require Foundation Entry On Its Confirmation Bar", group=G_SEQUENCE, display=display.none)
+bool useNestedBgobMidpointConfirmation = input.bool(true, "Confirm IMB-In-BGOB From Inner Midpoint", group=G_SEQUENCE, display=display.none)
+bool allowMacro950FoundationExpectancy = input.bool(true, "Allow 9:50 Macro Direction To Authorize 10:00 Foundation Entry", group=G_SEQUENCE, display=display.none)
+bool usePhaseExtremeFoundationCandidates = input.bool(true, "Keep Lowest / Highest Foundation Candidates Across 30-Minute Dividers", group=G_SEQUENCE, display=display.none)
+bool requireAmMacroReclaim = input.bool(true, "Require Confirmed 9:50 Macro Reclaim For Counter-Controller Transition", group=G_SEQUENCE, display=display.none)
+bool showSequenceStateLabels = input.bool(false, "Show Sequence Foundation Labels", group=G_SEQUENCE, display=display.none)
+bool enablePriorRespectedFpiReversal = input.bool(true, "Reverse On Retest Of Lowest / Highest Prior Respected FPI", group=G_SEQUENCE, display=display.none)
+bool enforcePremiumDiscountEntries = input.bool(true, "Require Buys In Discount / Sells In Premium", group=G_SEQUENCE, display=display.none)
+bool requireDirectionalBodyForFpiFailure = input.bool(true, "Require Opposing Candle Body For FPI Exit / Reversal", group=G_SEQUENCE, display=display.none)
+string G_VISUAL = "Clean Visuals"
+bool entriesOnlyMode = input.bool(false, "Entries Only Mode (Hide FPI / OB / IMB / Tables)", group=G_VISUAL, display=display.none)
+bool showFpiBoxes = input.bool(true, "Show First FPI Box Per Period", group=G_VISUAL, display=display.none)
+int fpiBoxTransparency = input.int(88, "FPI Box Transparency", minval=70, maxval=95, group=G_VISUAL, display=display.none)
+bool showFpiTags = input.bool(true, "Show Compact FPI Tags", group=G_VISUAL, display=display.none)
+bool showPeriodDividers = input.bool(true, "Show Black 30-Minute Dividers", group=G_VISUAL, display=display.none)
+bool showCleanTradeText = input.bool(true, "Show BUY / SELL / CLOSE Text", group=G_VISUAL, display=display.none)
+bool showExecutionTriangles = input.bool(true, "Show Exact Entry / Exit Triangles", group=G_VISUAL, display=display.none)
+bool showClosedTradeLines = input.bool(true, "Show Entry-To-Exit Trade Lines", group=G_VISUAL, display=display.none)
+bool showPeriodTradeTables = input.bool(true, "Show Trade Table Below Each Period", group=G_VISUAL, display=display.none)
+bool showSessionResults = input.bool(true, "Show NY Session Results", group=G_VISUAL, display=display.none)
+bool showConfluenceStatus = input.bool(true, "Show Session Confluence Stack", group=G_VISUAL, display=display.none)
+bool showOneMinuteDrawingsThrough15m = input.bool(true, "Show 1-Minute FPI Drawings Through 15m", group=G_VISUAL, display=display.none)
+float tradeTableGap = input.float(20.0, "Trade Table Gap Below Period Low", minval=1.0, step=1.0, group=G_VISUAL, display=display.none)
+float tradeTableHeight = input.float(30.0, "Trade Table Height", minval=20.0, step=1.0, group=G_VISUAL, display=display.none)
+string G_ENIGMA_MANAGEMENT = "PO3 MMXM Enigma — Trade Management"
+bool enableEnigmaManagement = input.bool(true, "Enable Enigma Multi-Confluence Management", group=G_ENIGMA_MANAGEMENT, display=display.none)
+float enigmaMinimumExpansionPoints = input.float(8.0, "Minimum HH / LL Close Expansion", minval=0.25, step=0.25, group=G_ENIGMA_MANAGEMENT, display=display.none)
+float enigmaExpansionPullbackPoints = input.float(18.0, "Pullback That Completes Failed Attempt", minval=1.0, step=0.25, group=G_ENIGMA_MANAGEMENT, display=display.none)
+int enigmaMinimumLegBars = input.int(3, "Minimum Bars Per Expansion Attempt", minval=2, maxval=30, group=G_ENIGMA_MANAGEMENT, display=display.none)
+int enigmaCautionWarnings = input.int(2, "Independent Warnings For Caution Exit", minval=2, maxval=5, group=G_ENIGMA_MANAGEMENT, display=display.none)
+int enigmaHardWarnings = input.int(3, "Independent Warnings For Hard Exit", minval=3, maxval=6, group=G_ENIGMA_MANAGEMENT, display=display.none)
+float enigmaGivebackWatchPoints = input.float(100.0, "Start Giveback Watch", minval=1.0, step=1.0, group=G_ENIGMA_MANAGEMENT, display=display.none)
+float enigmaMaximumGivebackPoints = input.float(50.0, "Maximum Giveback From MFE", minval=1.0, step=1.0, group=G_ENIGMA_MANAGEMENT, display=display.none)
+int enigmaOpposingConfirmations = input.int(2, "Distinct Opposing Structure Confirmations", minval=1, maxval=3, group=G_ENIGMA_MANAGEMENT, display=display.none)
+bool requireAuthorityFailureForCautionExit = input.bool(true, "Require Authority Or Foundation Failure For Caution Exit", group=G_ENIGMA_MANAGEMENT, display=display.none)
+
+string G_CATALOG = "1,008-Case Catalog Audit"
+bool enableCatalogAudit = input.bool(true, "Enable Catalog Audit", group=G_CATALOG, tooltip="Computes the Session/Macro catalog state after the 9:50-10:10 range locks. Audit mode does not change trades.")
+bool enforceCatalogGate = input.bool(false, "Enforce Catalog Direction Gate", group=G_CATALOG, tooltip="Experimental. Blocks a fresh AM entry when the 1,008-case resolver does not authorize the same direction. Leave off until chart replay is reviewed.")
+bool showCatalogAuditLabel = input.bool(false, "Show Current Catalog Audit Label", group=G_CATALOG)
+
+var enigma.EnigmaConfig config = enigma.newConfig(
+    enableBot,
+    orderQuantity,
+    forceFlatBy450,
+    enableSequenceEngine,
+    requireFoundationObImbPair,
+    allowOpposingImbFoundationPair,
+    allowControllerAlignedFoundationEntry,
+    allowEarlyCounterControllerFoundationEntry,
+    maximumEarlyFoundationExtensionPoints,
+    requireFreshFoundationSignal,
+    useNestedBgobMidpointConfirmation,
+    allowMacro950FoundationExpectancy,
+    usePhaseExtremeFoundationCandidates,
+    requireAmMacroReclaim,
+    showSequenceStateLabels,
+    enablePriorRespectedFpiReversal,
+    enforcePremiumDiscountEntries,
+    requireDirectionalBodyForFpiFailure,
+    entriesOnlyMode,
+    showFpiBoxes,
+    fpiBoxTransparency,
+    showFpiTags,
+    showPeriodDividers,
+    showCleanTradeText,
+    showExecutionTriangles,
+    showClosedTradeLines,
+    showPeriodTradeTables,
+    showSessionResults,
+    showConfluenceStatus,
+    showOneMinuteDrawingsThrough15m,
+    tradeTableGap,
+    tradeTableHeight,
+    enableEnigmaManagement,
+    enigmaMinimumExpansionPoints,
+    enigmaExpansionPullbackPoints,
+    enigmaMinimumLegBars,
+    enigmaCautionWarnings,
+    enigmaHardWarnings,
+    enigmaGivebackWatchPoints,
+    enigmaMaximumGivebackPoints,
+    enigmaOpposingConfirmations,
+    requireAuthorityFailureForCautionExit,
+    enableCatalogAudit,
+    enforceCatalogGate,
+    showCatalogAuditLabel
+)
+
+enigma.EnigmaOutput signals = enigma.run(config)
+
+alertcondition(signals.buyEntry, "Buy", "PO3 MMXM Enigma: BUY")
+alertcondition(signals.sellEntry, "Sell", "PO3 MMXM Enigma: SELL")
+alertcondition(signals.exitSignal and signals.closedDirection == 1, "Close Buy", "PO3 MMXM Enigma: CLOSE BUY")
+alertcondition(signals.exitSignal and signals.closedDirection == -1, "Close Sell", "PO3 MMXM Enigma: CLOSE SELL")
+
+// Catalog fields are exposed in TradingView's Data Window without adding chart clutter.
+plot(signals.catalogAvailable ? signals.catalogApprovedBias : na, "Catalog Approved Bias", display=display.data_window)
+plot(signals.catalogAvailable ? signals.catalogResolvedState : na, "Catalog Resolved State", display=display.data_window)
+plot(signals.catalogAvailable ? signals.catalogTerminalAction : na, "Catalog Terminal Action", display=display.data_window)
+plot(signals.catalogAvailable ? signals.catalogSweepEvent : na, "Catalog Sweep Event", display=display.data_window)
+plot(signals.catalogAvailable ? signals.catalogStructure : na, "Catalog Structure", display=display.data_window)
