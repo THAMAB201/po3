@@ -1,0 +1,248 @@
+        bullishObRunTop := na
+        bullishObRunBottom := na
+        bullishObRunStartTime := na
+        bullishObRunEndBar := na
+        bullishObCandidateFound := false
+        bullishObCandidateTop := na
+        bullishObCandidateBottom := na
+        bullishObCandidateStartTime := na
+        bullishObCandidateEndBar := na
+        bullishObBreakConfirmed := false
+        bullishObBreakBar := na
+        bullishObCandidateUsed := false
+        bearishObRunActive := false
+        bearishObRunTop := na
+        bearishObRunBottom := na
+        bearishObRunStartTime := na
+        bearishObRunEndBar := na
+        bearishObCandidateFound := false
+        bearishObCandidateTop := na
+        bearishObCandidateBottom := na
+        bearishObCandidateStartTime := na
+        bearishObCandidateEndBar := na
+        bearishObBreakConfirmed := false
+        bearishObBreakBar := na
+        bearishObCandidateUsed := false
+        bullishImbCandidateFound := false
+        bullishImbBreakConfirmed := false
+        bullishImbCandidateUsed := false
+        bearishImbCandidateFound := false
+        bearishImbBreakConfirmed := false
+        bearishImbCandidateUsed := false
+        bullPairBearImbFound := false
+        bullPairBearImbTop := na
+        bullPairBearImbBottom := na
+        bullPairBearImbFormationBar := na
+        bullPairBearImbStartTime := na
+        bullPairBearImbWindow := -1
+        bullPairBearImbReclaimConfirmed := false
+        bullPairBearImbReclaimBar := na
+        bullPairBearImbUsed := false
+        bearPairBullImbFound := false
+        bearPairBullImbTop := na
+        bearPairBullImbBottom := na
+        bearPairBullImbFormationBar := na
+        bearPairBullImbStartTime := na
+        bearPairBullImbWindow := -1
+        bearPairBullImbReclaimConfirmed := false
+        bearPairBullImbReclaimBar := na
+        bearPairBullImbUsed := false
+        activeHasFpi := false
+        activeFpiValid := false
+        activeProtectionEnabled := false
+        activeTradeDirection := 0
+        activeInvalidation := na
+        activeFpiBox := na
+        activeCanReverse := true
+        activeSourceKind := SOURCE_NONE
+        activeSourceWindow := -1
+        activeRetestCount := 0
+        activeTouchedLast := false
+        activeSecondRetestConsumed := false
+        fpiRequalificationWatch := false
+        fpiRequalificationDirection := 0
+        fpiRequalificationTop := na
+        fpiRequalificationBottom := na
+        fpiRequalificationWindow := -1
+        fpiRequalificationBar := na
+        fpiRequalificationAcceptanceConfirmed := false
+        fpiRequalificationAcceptanceBar := na
+        macro950Found := false
+        macro950Direction := 0
+        macro950Top := na
+        macro950Bottom := na
+        macro950FormationBar := na
+        macro950InitialSignalUsed := false
+        macro950AcceptanceConfirmed := false
+        macro950AcceptanceBar := na
+        macro950AuthorityDirection := 0
+        macro950AuthorityBar := na
+        macro950AuthorityRetestConfirmed := false
+        macro950OppositeRetestPending := false
+        macro950Box := na
+        catalog.resetMacroRange(catalogRange)
+        catalogSessionDisrespectedLatched := false
+        if not na(catalogAuditLabel)
+            label.delete(catalogAuditLabel)
+            catalogAuditLabel := na
+        macro950BgobActive := false
+        macro950BgobOriginalDirection := 0
+        macro950BgobDirection := 0
+        macro950BgobTop := na
+        macro950BgobBottom := na
+        macro950BgobFormationBar := na
+        macro950BgobStartTime := na
+        macro950BgobFlipConfirmed := false
+        macro950BgobFlipBar := na
+        macro950BgobUsed := false
+        macro950BgobBox := na
+        lastSwingHighClose := na
+        lastSwingLowClose := na
+        currentPeriodHighestClose := close
+        currentPeriodLowestClose := close
+        frozenPriorSwingHighClose := na
+        frozenPriorSwingLowClose := na
+        delayedFpiReversal := false
+        delayedFpiDirection := 0
+        delayedFpiTop := na
+        delayedFpiBottom := na
+        delayedFpiBreakLevel := na
+        delayedFpiWindow := -1
+        delayedFpiArmedBar := na
+        targetWindowLock := false
+        targetLockWindow := -1
+        recordedTradeOpen := false
+        recordedEarlyReversal := false
+        recordedNarrativeHoldConfirmed := false
+        recordedTradeDirection := 0
+        recordedEntry := na
+        recordedSl := na
+        recordedTp := na
+        recordedWindow := -1
+        recordedTradePhaseStartWindow := 0
+        recordedSlot := -1
+        recordedEntryBar := na
+        recordedClosedTradesAtEntry := strategy.closedtrades
+        recordedTarget := na
+        recordedMaxProfitPoints := 0.0
+        recordedBreakEvenArmed := false
+        recordedOriginKind := SOURCE_NONE
+        recordedOriginTop := na
+        recordedOriginBottom := na
+        campaignHoldAnchorFound := false
+        campaignHoldAnchorWindow := -1
+        campaignHoldAnchorTop := na
+        campaignHoldAnchorBottom := na
+        campaignAnchorSelectionConsumed := false
+        campaignReentryWait := false
+        campaignReentryExitWindow := -1
+        campaignReentryAlignedOnly := false
+        recoveryTradeWatchEligible := false
+        recoveryTradeFpiWindow := -1
+        recoveryTradeFpiTop := na
+        recoveryTradeFpiBottom := na
+        recoveryTradeAcceptanceSeen := false
+        recoveryTradeAcceptanceBar := na
+        failedRecoveryWait := false
+        failedRecoveryExitWindow := -1
+        reversalModeActive := false
+        reversalModeDirection := 0
+        reversalModeStartWindow := -1
+        reversalOpeningPairConsumed := false
+        intervalReentryWait := false
+        intervalReentryExitWindow := -1
+        intervalReentryDirection := 0
+        bullRevFoundationBuilding := false
+        bullRevFoundationReady := false
+        bullRevFoundationUsed := false
+        bullRevFoundationHasOb := false
+        bullRevFoundationHasImb := false
+        bullRevFoundationTop := na
+        bullRevFoundationBottom := na
+        bullRevFoundationObTop := na
+        bullRevFoundationObBottom := na
+        bullRevFoundationImbTop := na
+        bullRevFoundationImbBottom := na
+        bullRevFoundationWindow := -1
+        bullRevFoundationAgainstFpiWindow := -1
+        bullRevFoundationConfirmBar := na
+        bearRevFoundationBuilding := false
+        bearRevFoundationReady := false
+        bearRevFoundationUsed := false
+        bearRevFoundationHasOb := false
+        bearRevFoundationHasImb := false
+        bearRevFoundationTop := na
+        bearRevFoundationBottom := na
+        bearRevFoundationObTop := na
+        bearRevFoundationObBottom := na
+        bearRevFoundationImbTop := na
+        bearRevFoundationImbBottom := na
+        bearRevFoundationWindow := -1
+        bearRevFoundationAgainstFpiWindow := -1
+        bearRevFoundationConfirmBar := na
+        sessionPriceLow := low
+        sessionExtremeHigh := high
+        sessionExtremeLow := low
+        sessionClosedPoints := 0.0
+        sessionResultBox := na
+        confluenceStatusBox := na
+        dailyTradeLogBox := na
+
+        if (drawConfluenceStatus or drawSessionResults) and isOneMinute
+            int sessionResultsLeft = minuteTimestamp(SESSION_OPEN_MINUTE) + 60000
+            int sessionResultsRight = minuteTimestamp(SESSION_END_MINUTE) - 60000
+            float confluenceBoxTop = sessionPriceLow - cfg.tradeTableGap - cfg.tradeTableHeight - cfg.tradeTableGap
+            float confluenceBoxBottom = confluenceBoxTop - cfg.tradeTableHeight
+            if drawConfluenceStatus
+                confluenceStatusBox := box.new(left=sessionResultsLeft, top=confluenceBoxTop, right=sessionResultsRight, bottom=confluenceBoxBottom, xloc=xloc.bar_time, border_color=color.new(color.black, 0), border_width=2, bgcolor=color.new(#343a40, 12), text=confluenceSummary(sessionAnchorDirection, sessionFpiRegime, 0, na, confluenceBoundary, confluenceValid, reversalModeActive, reversalModeDirection, 0, 0), text_size=size.large, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center, text_font_family=font.family_monospace)
+            float sessionResultsTop = drawConfluenceStatus ? confluenceBoxBottom - cfg.tradeTableGap : confluenceBoxTop
+            float sessionResultsBottom = sessionResultsTop - cfg.tradeTableHeight
+            if drawSessionResults
+                sessionResultBox := box.new(left=sessionResultsLeft, top=sessionResultsTop, right=sessionResultsRight, bottom=sessionResultsBottom, xloc=xloc.bar_time, border_color=color.new(color.black, 0), border_width=2, bgcolor=resultColor(sessionClosedPoints), text="NY SESSION RESULTS\n" + signedPointsText(sessionClosedPoints), text_size=size.large, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center, text_font_family=font.family_monospace)
+                float dailyLogTop = sessionResultsBottom - cfg.tradeTableGap
+                float dailyLogBottom = dailyLogTop - cfg.tradeTableHeight * 2.0
+                dailyTradeLogBox := box.new(left=sessionResultsLeft, top=dailyLogTop, right=sessionResultsRight, bottom=dailyLogBottom, xloc=xloc.bar_time, border_color=color.new(color.black, 0), border_width=2, bgcolor=color.new(#212529, 8), text=dailyTradeLogText(ledger), text_size=size.normal, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center, text_font_family=font.family_monospace)
+
+
+    // The NY day is partitioned into three independent controller regimes.
+    // Phase changes clear directional campaign state and unfinished structures, but never
+    // force-close an existing economic position. Active position protection remains intact.
+    if nyPhaseChanged
+        activeNyPhase := currentNyPhase
+        pendingFpi := false
+        pendingAcceptanceConfirmed := false
+        pendingAcceptanceBar := na
+        sessionAnchorFpiFound := false
+        sessionAnchorDirection := 0
+        sessionAnchorTop := na
+        sessionAnchorBottom := na
+        sessionAnchorWindow := -1
+        sessionAnchorBar := na
+        sessionAnchorBox := na
+        sessionFpiRegime := SESSION_REGIME_UNRESOLVED
+        sessionAlignmentProvenByLaterFpi := false
+        sessionAnchorResolutionComplete := false
+        sessionAnchorAcceptanceConfirmed := false
+        sessionAnchorAcceptanceBar := na
+        openingFpiDisrespectConsumed := false
+        openingFpiWindowLock := false
+        openingFpiLockWindow := -1
+        array.clear(confluenceKind)
+        array.clear(confluenceSourceBar)
+        array.clear(confluenceWindow)
+        array.clear(confluenceTop)
+        array.clear(confluenceBottom)
+        array.clear(confluenceBoundary)
+        array.clear(confluenceValid)
+        array.clear(confluenceStructureBox)
+        bullishObRunActive := false
+        bullishObCandidateFound := false
+        bullishObBreakConfirmed := false
+        bullishObCandidateUsed := false
+        bearishObRunActive := false
+        bearishObCandidateFound := false
+        bearishObBreakConfirmed := false
+        bearishObCandidateUsed := false
+        bullishImbCandidateFound := false
+        bullishImbBreakConfirmed := false
+        bullishImbCandidateUsed := false
