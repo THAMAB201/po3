@@ -1,0 +1,499 @@
+        drawExitTriangleDirection := recordedTradeDirection
+        drawExitTrianglePrice := brokerExitPrice
+        drawClosedTradeEntryBar := recordedEntryBar
+        drawClosedTradeEntryPrice := recordedEntry
+        closedDirectionNow := recordedTradeDirection
+        exitNow := true
+        recordedTradeOpen := false
+        activeFpiValid := false
+        activeSourceKind := SOURCE_NONE
+        delayedFpiReversal := false
+        fpiRequalificationWatch := false
+        fpiRequalificationAcceptanceConfirmed := false
+        fpiRequalificationAcceptanceBar := na
+        campaignHoldAnchorFound := false
+        campaignHoldAnchorWindow := -1
+        campaignHoldAnchorTop := na
+        campaignHoldAnchorBottom := na
+        strategy.cancel(PROTECTION_ID)
+        if targetExit
+            // Reconciliation can occur on the first bar of the next period. Lock the
+            // actual fill period, not whichever period is current when it is observed.
+            targetLockWindow := brokerExitWindow
+            targetWindowLock := brokerExitWindow >= 0 and brokerExitWindow == currentWindow
+
+    if not recordedTradeOpen
+        recoveryTradeWatchEligible := false
+        recoveryTradeFpiWindow := -1
+        recoveryTradeFpiTop := na
+        recoveryTradeFpiBottom := na
+        recoveryTradeAcceptanceSeen := false
+        recoveryTradeAcceptanceBar := na
+
+    // Every exact period gets a five-cell chart-anchored ledger. An open trade is held
+    // through the divider while the next period waits for its own first FPI.
+    if newPeriod
+        if targetWindowLock and currentWindow != targetLockWindow
+            targetWindowLock := false
+            targetLockWindow := -1
+        if openingFpiWindowLock and currentWindow != openingFpiLockWindow
+            openingFpiWindowLock := false
+            openingFpiLockWindow := -1
+            openingFpiLockReleasedNow := true
+
+        frozenPriorSwingHighClose := not na(lastSwingHighClose) ? lastSwingHighClose : currentPeriodHighestClose
+        frozenPriorSwingLowClose := not na(lastSwingLowClose) ? lastSwingLowClose : currentPeriodLowestClose
+        currentPeriodHighestClose := close
+        currentPeriodLowestClose := close
+        array.set(holdingByWindow, currentWindow, recordedTradeOpen or strategy.position_size != 0)
+
+        if pendingFpi
+            pendingFpi := false
+            pendingAcceptanceConfirmed := false
+            pendingAcceptanceBar := na
+            if not na(pendingBox)
+                box.set_border_color(pendingBox, color.new(#868e96, 35))
+
+        // Foundation discovery is phase-wide when enabled. The lowest bullish OB/IMB
+        // and highest bearish OB/IMB remain eligible after a 30-minute divider, so a
+        // break in one interval and the confirming retest in the next interval are one
+        // continuous sequence. Phase changes at 11:30 and 1:30 still clear all candidates.
+        if not (cfg.enableSequenceEngine and cfg.usePhaseExtremeFoundationCandidates)
+            bullishObRunActive := false
+            bullishObCandidateFound := false
+            bullishObBreakConfirmed := false
+            bullishObCandidateUsed := false
+            bearishObRunActive := false
+            bearishObCandidateFound := false
+            bearishObBreakConfirmed := false
+            bearishObCandidateUsed := false
+            bullishImbCandidateFound := false
+            bullishImbBreakConfirmed := false
+            bullishImbCandidateUsed := false
+            bearishImbCandidateFound := false
+            bearishImbBreakConfirmed := false
+            bearishImbCandidateUsed := false
+        // Opposing-IMB pair candidates already persist across dividers inside the
+        // same AM, lunch, or PM phase, allowing either the IMB or OB to confirm first.
+
+        stateWindow := currentWindow
+        currentPeriodLow := low
+
+        if drawPeriodTables and isOneMinute
+            int tableLeft = minuteTimestamp(periodStartMinute(currentWindow)) + 60000
+            int tableRight = minuteTimestamp(periodEndMinute(currentWindow)) - 60000
+            int cellWidth = int(math.floor((tableRight - tableLeft) / 5.0))
+            float tableTop = currentPeriodLow - cfg.tradeTableGap
+            float tableBottom = tableTop - cfg.tradeTableHeight
+            box tradeCell = makeLedgerCell(tableLeft, tableLeft + cellWidth, tableTop, tableBottom, "")
+            box entryCell = makeLedgerCell(tableLeft + cellWidth, tableLeft + cellWidth * 2, tableTop, tableBottom, "")
+            box slCell = makeLedgerCell(tableLeft + cellWidth * 2, tableLeft + cellWidth * 3, tableTop, tableBottom, "")
+            box tpCell = makeLedgerCell(tableLeft + cellWidth * 3, tableLeft + cellWidth * 4, tableTop, tableBottom, "")
+            box resultCell = makeLedgerCell(tableLeft + cellWidth * 4, tableRight, tableTop, tableBottom, "")
+            array.set(tradeCellByWindow, currentWindow, tradeCell)
+            array.set(entryCellByWindow, currentWindow, entryCell)
+            array.set(slCellByWindow, currentWindow, slCell)
+            array.set(tpCellByWindow, currentWindow, tpCell)
+            array.set(resultCellByWindow, currentWindow, resultCell)
+            renderLedger(ledger, currentWindow, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+
+    // Keep the current period table a fixed distance beneath that period's lowest price.
+    if inSession and currentWindow >= 0 and currentWindow == stateWindow
+        sessionPriceLow := na(sessionPriceLow) ? low : math.min(sessionPriceLow, low)
+        currentPeriodLow := na(currentPeriodLow) ? low : math.min(currentPeriodLow, low)
+        currentPeriodHighestClose := na(currentPeriodHighestClose) ? close : math.max(currentPeriodHighestClose, close)
+        currentPeriodLowestClose := na(currentPeriodLowestClose) ? close : math.min(currentPeriodLowestClose, close)
+        if drawPeriodTables and isOneMinute
+            float tableTop = currentPeriodLow - cfg.tradeTableGap
+            float tableBottom = tableTop - cfg.tradeTableHeight
+            box tradeCell = array.get(tradeCellByWindow, currentWindow)
+            box entryCell = array.get(entryCellByWindow, currentWindow)
+            box slCell = array.get(slCellByWindow, currentWindow)
+            box tpCell = array.get(tpCellByWindow, currentWindow)
+            box resultCell = array.get(resultCellByWindow, currentWindow)
+            if not na(tradeCell)
+                box.set_top(tradeCell, tableTop)
+                box.set_bottom(tradeCell, tableBottom)
+            if not na(entryCell)
+                box.set_top(entryCell, tableTop)
+                box.set_bottom(entryCell, tableBottom)
+            if not na(slCell)
+                box.set_top(slCell, tableTop)
+                box.set_bottom(slCell, tableBottom)
+            if not na(tpCell)
+                box.set_top(tpCell, tableTop)
+                box.set_bottom(tpCell, tableBottom)
+            if not na(resultCell)
+                box.set_top(resultCell, tableTop)
+                box.set_bottom(resultCell, tableBottom)
+
+    // Raw three-candle swing confirmation. The frozen level used by a later profitable-trade
+    // delay is captured at the period boundary and is never moved after the opposing FPI appears.
+    if inSession and isOneMinute and barstate.isconfirmed and bar_index >= 2
+        bool newSwingHigh = high[1] > high[2] and high[1] >= high
+        bool newSwingLow = low[1] < low[2] and low[1] <= low
+        if newSwingHigh
+            lastSwingHighClose := math.max(math.max(close[2], close[1]), close)
+        if newSwingLow
+            lastSwingLowClose := math.min(math.min(close[2], close[1]), close)
+
+    // Per-bar first-FPI signal payload.
+    bool mainSignalNow = false
+    int mainSignalDirection = 0
+    float mainSignalTop = na
+    float mainSignalBottom = na
+    int mainSignalWindow = -1
+    box mainSignalBox = na
+    bool mainSignalWasRetest = false
+    int mainSignalOriginalDirection = 0
+    bool mainSignalWasDisrespected = false
+    bool mainSignalIsSessionAnchor = false
+    int mainSignalStructureBar = na
+
+    // Select and draw only the first FPI in every exact period, including 9:30. The middle
+    // displacement candle assigns the FPI to its period; an FPI confirmed at the next
+    // divider is still drawn in the correct prior period but cannot arm a late retest.
+    if cfg.enableBot and isOneMinute and (inSession or sessionEnded) and barstate.isconfirmed
+        int detectedDirection = fpiDirection()
+        int middleMinute = minuteAt(1)
+        int detectedWindow = middleWindow
+        bool middleInMacro950 = middleMinute >= MACRO_950_START_MINUTE and middleMinute < MACRO_950_END_MINUTE
+        bool middleInExactPeriod = detectedWindow >= 0 and middleMinute >= periodStartMinute(detectedWindow) and middleMinute < periodEndMinute(detectedWindow)
+        bool firstFpiThisPeriod = middleInExactPeriod and not array.get(selectedByWindow, detectedWindow) and detectedDirection != 0
+
+        if not macro950Found and middleInMacro950 and detectedDirection != 0
+            macro950Found := true
+            macro950Direction := detectedDirection
+            macro950Top := fpiTop()
+            macro950Bottom := fpiBottom()
+            macro950FormationBar := bar_index
+            macro950InitialSignalUsed := false
+            macro950AcceptanceConfirmed := false
+            macro950AcceptanceBar := na
+            macro950AuthorityDirection := 0
+            macro950AuthorityBar := na
+            if drawStructureVisuals
+                macro950Box := structureBox(time[2], macro950Top, minuteTimestamp(MACRO_950_TRADE_END), macro950Bottom, macro950Direction, cfg.fpiBoxTransparency, drawStructureTags ? "9:50-10:10 FPI" + (macro950Direction == 1 ? "+" : "-") : "")
+
+        if firstFpiThisPeriod
+            array.set(selectedByWindow, detectedWindow, true)
+            float selectedTop = fpiTop()
+            float selectedBottom = fpiBottom()
+            selectedFpiNow := true
+            selectedFpiWindow := detectedWindow
+            selectedFpiDirection := detectedDirection
+            selectedFpiTop := selectedTop
+            selectedFpiBottom := selectedBottom
+            box selectedBox = na
+            int eligibleControllerWindow = controllerWindowForPhase(activeNyPhase)
+            bool selectedIsSessionAnchor = not sessionAnchorFpiFound and eligibleControllerWindow >= 0 and detectedWindow == eligibleControllerWindow
+            array.set(intervalFpiOriginalDirection, detectedWindow, detectedDirection)
+            array.set(intervalFpiTop, detectedWindow, selectedTop)
+            array.set(intervalFpiBottom, detectedWindow, selectedBottom)
+            array.set(intervalFpiThreeCandleHigh, detectedWindow, math.max(high, math.max(high[1], high[2])))
+            array.set(intervalFpiThreeCandleLow, detectedWindow, math.min(low, math.min(low[1], low[2])))
+            array.set(intervalFpiDisrespected, detectedWindow, false)
+            array.set(intervalFpiRespected, detectedWindow, false)
+            array.set(intervalFpiFormationBar, detectedWindow, bar_index)
+            array.set(intervalFpiPersistentAcceptanceSeen, detectedWindow, false)
+            array.set(intervalFpiPersistentAcceptanceBar, detectedWindow, na)
+            bool selectedOpposesSession = sessionAnchorFpiFound and detectedDirection != sessionAnchorDirection
+            bool holdingSessionTrade = recordedTradeOpen and recordedTradeDirection == sessionAnchorDirection
+            array.set(pullbackByWindow, detectedWindow, selectedOpposesSession and holdingSessionTrade)
+
+            // The selected FPI's third candle is the only BGOB candidate for this period.
+            // It remains eligible only while price has not traded through the candle edge
+            // adjoining the FPI. The full candle high/low is the BGOB zone.
+            array.set(bgobValidByWindow, detectedWindow, true)
+            array.set(bgobUsedByWindow, detectedWindow, false)
+            array.set(bgobDirectionByWindow, detectedWindow, detectedDirection)
+            array.set(bgobTopByWindow, detectedWindow, high)
+            array.set(bgobBottomByWindow, detectedWindow, low)
+            array.set(bgobFormationBarByWindow, detectedWindow, bar_index)
+            array.set(bgobBreakConfirmedByWindow, detectedWindow, false)
+            array.set(bgobBreakBarByWindow, detectedWindow, na)
+
+            if drawStructureVisuals
+                int selectedLeft = math.max(time[2], minuteTimestamp(periodStartMinute(detectedWindow)))
+                selectedBox := structureBox(selectedLeft, selectedTop, minuteTimestamp(periodEndMinute(detectedWindow)), selectedBottom, detectedDirection, cfg.fpiBoxTransparency, drawStructureTags ? periodLabel(detectedWindow) + " FPI" + (detectedDirection == 1 ? "+" : "-") : "")
+
+            if selectedIsSessionAnchor
+                sessionAnchorFpiFound := true
+                sessionAnchorDirection := detectedDirection
+                sessionAnchorTop := selectedTop
+                sessionAnchorBottom := selectedBottom
+                sessionAnchorWindow := detectedWindow
+                sessionAnchorBar := bar_index
+                sessionAnchorBox := selectedBox
+                sessionFpiRegime := SESSION_REGIME_UNRESOLVED
+                sessionAlignmentProvenByLaterFpi := false
+                sessionAnchorResolutionComplete := false
+                sessionAnchorAcceptanceConfirmed := false
+                sessionAnchorAcceptanceBar := na
+
+            // Non-anchor FPIs remain pending until acceptance plus a later confirmed
+            // retest, or until a close through the far edge confirms the opposite side.
+            if currentWindow == detectedWindow and not selectedIsSessionAnchor
+                pendingFpi := true
+                pendingDirection := detectedDirection
+                pendingTop := selectedTop
+                pendingBottom := selectedBottom
+                pendingBar := bar_index
+                pendingWindow := detectedWindow
+                pendingBox := selectedBox
+                pendingAcceptanceConfirmed := false
+                pendingAcceptanceBar := na
+
+    // A failed profitable recovery remains flat until the first selected FPI from a
+    // strictly later exact period. Formation releases the time lock; entry still
+    // requires that interval's completed structural validation.
+    bool failedRecoveryWaitReleasedNow = failedRecoveryWait and selectedFpiNow and selectedFpiWindow > failedRecoveryExitWindow
+    if failedRecoveryWaitReleasedNow
+        failedRecoveryWait := false
+        failedRecoveryExitWindow := -1
+
+    // Symmetric first-two-post-controller conflict regime. For a bullish controller, both FPI zones
+    // must be wholly below the session FPI. For a bearish session, both must be wholly
+    // above it. A later FPI wholly back on the aligned side releases reversal mode.
+    int reversalFirstWindow = sessionAnchorWindow >= 0 ? sessionAnchorWindow + 1 : -1
+    int reversalSecondWindow = sessionAnchorWindow >= 0 ? sessionAnchorWindow + 2 : -1
+    bool reversalOpeningPairAvailable = sessionAnchorFpiFound and reversalSecondWindow <= LAST_WINDOW_ID and reversalFirstWindow >= 0 and array.get(selectedByWindow, reversalFirstWindow) and array.get(selectedByWindow, reversalSecondWindow)
+    bool reversalOpeningPairConflicts = false
+    if reversalOpeningPairAvailable
+        float firstConflictTop = array.get(intervalFpiTop, reversalFirstWindow)
+        float firstConflictBottom = array.get(intervalFpiBottom, reversalFirstWindow)
+        float secondConflictTop = array.get(intervalFpiTop, reversalSecondWindow)
+        float secondConflictBottom = array.get(intervalFpiBottom, reversalSecondWindow)
+        reversalOpeningPairConflicts := sessionAnchorDirection == 1 ? firstConflictTop < sessionAnchorBottom and secondConflictTop < sessionAnchorBottom : firstConflictBottom > sessionAnchorTop and secondConflictBottom > sessionAnchorTop
+
+    if not reversalModeActive and not reversalOpeningPairConsumed and reversalOpeningPairConflicts
+        reversalModeActive := true
+        reversalModeDirection := -sessionAnchorDirection
+        reversalModeStartWindow := reversalSecondWindow
+        reversalOpeningPairConsumed := true
+        reversalModeActivatedNow := true
+        sessionFpiRegime := SESSION_REGIME_JUDAS
+        sessionAlignmentProvenByLaterFpi := false
+        campaignHoldAnchorFound := false
+        campaignHoldAnchorWindow := -1
+        campaignHoldAnchorTop := na
+        campaignHoldAnchorBottom := na
+        campaignReentryWait := false
+        campaignReentryExitWindow := -1
+        campaignReentryAlignedOnly := false
+        intervalReentryWait := false
+        intervalReentryExitWindow := -1
+        intervalReentryDirection := 0
+        delayedFpiReversal := false
+
+    if reversalModeActive and selectedFpiNow and selectedFpiWindow > reversalModeStartWindow
+        bool selectedFpiRestoresSessionSide = sessionAnchorDirection == 1 ? selectedFpiBottom > sessionAnchorTop : selectedFpiTop < sessionAnchorBottom
+        if selectedFpiRestoresSessionSide
+            reversalModeActive := false
+            reversalModeDirection := 0
+            reversalModeStartWindow := -1
+            reversalModeReleasedNow := true
+            sessionFpiRegime := SESSION_REGIME_ALIGNED
+            sessionAlignmentProvenByLaterFpi := true
+            intervalReentryWait := false
+            intervalReentryExitWindow := -1
+            intervalReentryDirection := 0
+            delayedFpiReversal := false
+
+    // The first session FPI uses the same strict state machine but is retained even
+    // if it forms at a divider. Bullish requires close above the top, then a later
+    // zone retest that closes above the top. Bearish is exactly symmetric.
+    if sessionAnchorFpiFound and not sessionAnchorResolutionComplete and isOneMinute and inSession and barstate.isconfirmed and not na(sessionAnchorBar) and bar_index > sessionAnchorBar
+        bool sessionAnchorFailure = sessionAnchorDirection == 1 ? close < sessionAnchorBottom : close > sessionAnchorTop
+        bool sessionAnchorAcceptanceClose = sessionAnchorDirection == 1 ? close > sessionAnchorTop : close < sessionAnchorBottom
+        bool sessionAnchorZoneRetest = low <= sessionAnchorTop and high >= sessionAnchorBottom
+        if sessionAnchorFailure
+            sessionAnchorResolutionComplete := true
+            sessionAnchorAcceptanceConfirmed := false
+            sessionAnchorAcceptanceBar := na
+            sessionFpiRegime := SESSION_REGIME_JUDAS
+            mainSignalNow := true
+            mainSignalDirection := -sessionAnchorDirection
+            mainSignalTop := sessionAnchorTop
+            mainSignalBottom := sessionAnchorBottom
+            mainSignalWindow := sessionAnchorWindow
+            mainSignalBox := sessionAnchorBox
+            mainSignalWasRetest := false
+            mainSignalOriginalDirection := sessionAnchorDirection
+            mainSignalWasDisrespected := true
+            mainSignalIsSessionAnchor := true
+            mainSignalStructureBar := sessionAnchorBar
+            if not na(sessionAnchorBox)
+                box.set_border_width(sessionAnchorBox, 3)
+                box.set_border_color(sessionAnchorBox, color.new(#f08c00, 0))
+        else if not sessionAnchorAcceptanceConfirmed
+            if sessionAnchorAcceptanceClose
+                sessionAnchorAcceptanceConfirmed := true
+                sessionAnchorAcceptanceBar := bar_index
+                if not na(sessionAnchorBox)
+                    box.set_border_color(sessionAnchorBox, color.new(#1971c2, 0))
+        else if not na(sessionAnchorAcceptanceBar) and bar_index > sessionAnchorAcceptanceBar and sessionAnchorZoneRetest and sessionAnchorAcceptanceClose
+            sessionAnchorResolutionComplete := true
+            sessionFpiRegime := SESSION_REGIME_ALIGNED
+            mainSignalNow := true
+            mainSignalDirection := sessionAnchorDirection
+            mainSignalTop := sessionAnchorTop
+            mainSignalBottom := sessionAnchorBottom
+            mainSignalWindow := sessionAnchorWindow
+            mainSignalBox := sessionAnchorBox
+            mainSignalWasRetest := true
+            mainSignalOriginalDirection := sessionAnchorDirection
+            mainSignalWasDisrespected := false
+            mainSignalIsSessionAnchor := true
+            mainSignalStructureBar := sessionAnchorBar
+            if not na(sessionAnchorBox)
+                box.set_border_width(sessionAnchorBox, 3)
+                box.set_border_color(sessionAnchorBox, color.new(#1971c2, 0))
+
+    // Every later selected FPI follows the same acceptance -> later retest sequence.
+    // No-retest continuation is observation only and cannot create a trade.
+    if pendingFpi and not mainSignalNow and isOneMinute and inSession and barstate.isconfirmed and currentWindow == pendingWindow and bar_index > pendingBar
+        bool pendingCloseDisrespect = pendingDirection == 1 ? close < pendingBottom : close > pendingTop
+        bool pendingAcceptanceClose = pendingDirection == 1 ? close > pendingTop : close < pendingBottom
+        bool pendingZoneRetest = low <= pendingTop and high >= pendingBottom
+        if pendingCloseDisrespect
+            pendingFpi := false
+            pendingAcceptanceConfirmed := false
+            pendingAcceptanceBar := na
+            mainSignalNow := true
+            mainSignalDirection := -pendingDirection
+            mainSignalTop := pendingTop
+            mainSignalBottom := pendingBottom
+            mainSignalWindow := pendingWindow
+            mainSignalBox := pendingBox
+            mainSignalWasRetest := false
+            mainSignalOriginalDirection := pendingDirection
+            mainSignalWasDisrespected := true
+            mainSignalIsSessionAnchor := false
+            mainSignalStructureBar := pendingBar
+            if not na(pendingBox)
+                box.set_border_width(pendingBox, 3)
+                box.set_border_color(pendingBox, color.new(#f08c00, 0))
+        else if not pendingAcceptanceConfirmed
+            if pendingAcceptanceClose
+                pendingAcceptanceConfirmed := true
+                pendingAcceptanceBar := bar_index
+                if not na(pendingBox)
+                    box.set_border_color(pendingBox, color.new(#1971c2, 0))
+        else if not na(pendingAcceptanceBar) and bar_index > pendingAcceptanceBar and pendingZoneRetest and pendingAcceptanceClose
+            pendingFpi := false
+            pendingAcceptanceConfirmed := false
+            pendingAcceptanceBar := na
+            mainSignalNow := true
+            mainSignalDirection := pendingDirection
+            mainSignalTop := pendingTop
+            mainSignalBottom := pendingBottom
+            mainSignalWindow := pendingWindow
+            mainSignalBox := pendingBox
+            mainSignalWasRetest := true
+            mainSignalOriginalDirection := pendingDirection
+            mainSignalWasDisrespected := false
+            mainSignalIsSessionAnchor := false
+            mainSignalStructureBar := pendingBar
+            if not na(pendingBox)
+                box.set_border_width(pendingBox, 3)
+                box.set_border_color(pendingBox, color.new(#1971c2, 0))
+
+    if mainSignalNow and mainSignalWindow >= 0
+        array.set(intervalFpiRespected, mainSignalWindow, not mainSignalWasDisrespected)
+
+    // After an anchor-FPI exit, no same-period recovery is permitted. A later exact
+    // period must validate an FPI back in the permanent session direction first.
+    bool campaignReentryAlignmentNow = campaignReentryWait and mainSignalNow and mainSignalWindow > campaignReentryExitWindow and mainSignalOriginalDirection == sessionAnchorDirection and not mainSignalWasDisrespected
+    if campaignReentryAlignmentNow
+        campaignReentryWait := false
+        campaignReentryExitWindow := -1
+        campaignReentryAlignedOnly := true
+
+    // Losing the final prior support/resistance interval closes first and then waits.
+    // Only a respected FPI in a strictly later window and in the exited trade's
+    // direction releases the lock; that later interval still needs matching structure.
+    bool intervalReentryAlignmentNow = intervalReentryWait and mainSignalNow and mainSignalWindow > intervalReentryExitWindow and mainSignalOriginalDirection == intervalReentryDirection and not mainSignalWasDisrespected
+    if intervalReentryAlignmentNow
+        intervalReentryWait := false
+        intervalReentryExitWindow := -1
+        intervalReentryDirection := 0
+
+    // The first selected FPI in 9:30-10:00 has a dedicated failure outcome. Any
+    // confirmed close-disrespect closes the open trade, suppresses the immediate
+    // opposite entry, and locks new entries until the 10:00 divider.
+    bool openingFpiDisrespectNow = sessionAnchorFpiFound and sessionAnchorWindow == controllerWindowForPhase(activeNyPhase) and currentWindow == sessionAnchorWindow and not openingFpiDisrespectConsumed and not na(sessionAnchorBar) and bar_index > sessionAnchorBar and (sessionAnchorDirection == 1 ? close < sessionAnchorBottom : close > sessionAnchorTop)
+    if openingFpiDisrespectNow
+        openingFpiDisrespectConsumed := true
+        openingFpiWindowLock := true
+        openingFpiLockWindow := 0
+        sessionFpiRegime := SESSION_REGIME_JUDAS
+        sessionAlignmentProvenByLaterFpi := false
+        // Initial resolution normally emits an opposite signal; the opening rule is
+        // close-and-wait, so that payload is explicitly consumed instead.
+        if mainSignalIsSessionAnchor
+            mainSignalNow := false
+
+    // Initial disrespect does not erase the first session FPI. It starts a Judas
+    // phase in the opposing direction. Only a later exact-period FPI pointing in the
+    // session direction and being respected can prove alignment and end that phase.
+    bool sessionAnchorDisrespectedNow = sessionAnchorFpiFound and sessionFpiRegime == SESSION_REGIME_ALIGNED and not sessionAlignmentProvenByLaterFpi and not na(sessionAnchorBar) and bar_index > sessionAnchorBar and (sessionAnchorDirection == 1 ? close < sessionAnchorBottom : close > sessionAnchorTop)
+    if sessionAnchorDisrespectedNow
+        sessionFpiRegime := SESSION_REGIME_JUDAS
+
+    bool sessionAlignmentProofNow = sessionAnchorFpiFound and sessionFpiRegime == SESSION_REGIME_JUDAS and mainSignalNow and not mainSignalIsSessionAnchor and mainSignalWindow > sessionAnchorWindow and mainSignalOriginalDirection == sessionAnchorDirection and not mainSignalWasDisrespected
+    if sessionAlignmentProofNow
+        sessionFpiRegime := SESSION_REGIME_ALIGNED
+        sessionAlignmentProvenByLaterFpi := true
+
+    // The first FPI whose displacement candle occurs from 9:50 through 10:09 is a
+    // persistent AM authority during 10:00-11:30. Its intended direction requires an
+    // outside acceptance close, then a later physical retest and another outside close.
+    // A far-edge close only nominates the opposing authority; a later retest and outside close confirms it.
+    bool macro950SignalNow = false
+    int macro950SignalDirection = 0
+    bool macro950SignalWasRetest = false
+    bool macro950WindowActive = cfg.enableBot and activeNyPhase == SESSION_PHASE_AM and macro950Found and isOneMinute and inSession and barstate.isconfirmed and nowMinute >= MACRO_950_AUTHORITY_START and nowMinute < MACRO_950_TRADE_END
+    bool macro950CanExecuteNow = nowMinute >= MACRO_950_TRADE_START or recordedTradeOpen or strategy.position_size != 0
+
+    if macro950WindowActive and not macro950InitialSignalUsed and bar_index > macro950FormationBar
+        bool macro950ZoneRetest = low <= macro950Top and high >= macro950Bottom
+        bool macro950AcceptanceClose = macro950Direction == 1 ? close > macro950Top : close < macro950Bottom
+        bool macro950FarEdgeFailure = macro950Direction == 1 ? close < macro950Bottom : close > macro950Top
+        if macro950FarEdgeFailure
+            macro950SignalNow := false
+            macro950SignalDirection := -macro950Direction
+            macro950SignalWasRetest := false
+            macro950InitialSignalUsed := true
+            macro950AuthorityDirection := -macro950Direction
+            macro950AuthorityBar := bar_index
+            macro950AuthorityRetestConfirmed := false
+            macro950OppositeRetestPending := true
+            macro950AcceptanceConfirmed := false
+            macro950AcceptanceBar := na
+        else if not macro950AcceptanceConfirmed
+            if macro950AcceptanceClose
+                // A close on the intended side establishes the original Macro-FPI bias.
+                // The later retest still upgrades that authority to fully retest-confirmed.
+                macro950AcceptanceConfirmed := true
+                macro950AcceptanceBar := bar_index
+                macro950AuthorityDirection := macro950Direction
+                macro950AuthorityBar := bar_index
+                macro950AuthorityRetestConfirmed := false
+                macro950OppositeRetestPending := false
+        else if not na(macro950AcceptanceBar) and bar_index > macro950AcceptanceBar and macro950ZoneRetest and macro950AcceptanceClose
+            macro950SignalNow := macro950CanExecuteNow
+            macro950SignalDirection := macro950Direction
+            macro950SignalWasRetest := true
+            macro950InitialSignalUsed := true
+            macro950AuthorityDirection := macro950Direction
+            macro950AuthorityBar := bar_index
+            macro950AuthorityRetestConfirmed := true
+            macro950OppositeRetestPending := false
+            macro950AcceptanceConfirmed := false
+            macro950AcceptanceBar := na
+        if macro950SignalNow
+            delayedFpiReversal := false
+            if not na(macro950Box)
+                box.set_border_width(macro950Box, 3)
+                box.set_border_color(macro950Box, fpiBorderColor(macro950SignalDirection))
