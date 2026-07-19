@@ -1,0 +1,488 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © SunovaBeach
+//@version=6
+// @description PO3 MMXM Enigma full engine. Preserves the anchored FPI/OB/IMB/BGOB visuals, trade ledger, execution logic, and Enigma risk management while keeping the strategy shell lightweight.
+library("PO3MMXMEnigmaCore", overlay = true, dynamic_requests = true)
+
+// Version 2 reuses the compact management engine from immutable version 1.
+// TradingView libraries may import a previous version of themselves.
+import SunovaBeach/PO3MMXMEnigmaCore/1 as enigmaCore
+
+const string TZ = "America/New_York"
+const string NY_SESSION = "0930-1700"
+const string ORDER_ID = " "
+const string PROTECTION_ID = "PROTECTION"
+const int SESSION_OPEN_MINUTE = 570
+const int WINDOW_START_MINUTE = 570
+const int SESSION_END_MINUTE = 1020
+const int FORCE_FLAT_MINUTE = 1010
+const int PERIOD_MINUTES = 30
+const int LAST_WINDOW_START_MINUTE = 990
+const int LAST_WINDOW_ID = 14
+const int MACRO_950_START_MINUTE = 590
+const int MACRO_950_END_MINUTE = 610
+const int MACRO_950_AUTHORITY_START = 590
+const int MACRO_950_TRADE_START = 600
+const int NY_AM_END_MINUTE = 690
+const int NY_PM_START_MINUTE = 810
+const int MACRO_950_TRADE_END = 690
+const int SESSION_PHASE_NONE = 0
+const int SESSION_PHASE_AM = 1
+const int SESSION_PHASE_LUNCH = 2
+const int SESSION_PHASE_PM = 3
+const int MAX_VISUAL_TIMEFRAME_MINUTES = 15
+const float BREAK_EVEN_TRIGGER_POINTS = 80.0
+const float FIXED_TARGET_POINTS = 500.0
+const float PROFITABLE_HOLD_THRESHOLD_POINTS = 50.0
+const float FAILED_RECOVERY_PROFIT_POINTS = 100.0
+const int FAILED_RECOVERY_CONFIRMATION_BARS = 5
+const int REVERSAL_FIRST_WINDOW = 1
+const int REVERSAL_SECOND_WINDOW = 2
+const int SOURCE_NONE = 0
+const int SOURCE_FPI = 1
+const int SOURCE_BGOB = 2
+const int SOURCE_MACRO_950 = 3
+const int SOURCE_FPI_REQUALIFICATION = 4
+const int SOURCE_DELAYED_FPI = 5
+const int SOURCE_ORDER_BLOCK = 6
+const int SOURCE_REVERSAL_FOUNDATION = 7
+const int SOURCE_PRIOR_FPI_RETEST = 8
+const int SESSION_REGIME_UNRESOLVED = 0
+const int SESSION_REGIME_ALIGNED = 1
+const int SESSION_REGIME_JUDAS = -1
+const int MAX_LEDGER_ROWS = 3
+
+export type EnigmaConfig
+    bool enableBot
+    float orderQuantity
+    bool forceFlatBy450
+    bool enableSequenceEngine
+    bool requireFoundationObImbPair
+    bool allowOpposingImbFoundationPair
+    bool allowControllerAlignedFoundationEntry
+    bool allowMacro950FoundationExpectancy
+    bool usePhaseExtremeFoundationCandidates
+    bool requireAmMacroReclaim
+    bool showSequenceStateLabels
+    bool enablePriorRespectedFpiReversal
+    bool entriesOnlyMode
+    bool showFpiBoxes
+    int fpiBoxTransparency
+    bool showFpiTags
+    bool showPeriodDividers
+    bool showCleanTradeText
+    bool showExecutionTriangles
+    bool showClosedTradeLines
+    bool showPeriodTradeTables
+    bool showSessionResults
+    bool showConfluenceStatus
+    bool showOneMinuteDrawingsThrough15m
+    float tradeTableGap
+    float tradeTableHeight
+    bool enableEnigmaManagement
+    float enigmaMinimumExpansionPoints
+    float enigmaExpansionPullbackPoints
+    int enigmaMinimumLegBars
+    int enigmaCautionWarnings
+    int enigmaHardWarnings
+    float enigmaGivebackWatchPoints
+    float enigmaMaximumGivebackPoints
+    int enigmaOpposingConfirmations
+
+export newConfig(
+    bool enableBot,
+    float orderQuantity,
+    bool forceFlatBy450,
+    bool enableSequenceEngine,
+    bool requireFoundationObImbPair,
+    bool allowOpposingImbFoundationPair,
+    bool allowControllerAlignedFoundationEntry,
+    bool allowMacro950FoundationExpectancy,
+    bool usePhaseExtremeFoundationCandidates,
+    bool requireAmMacroReclaim,
+    bool showSequenceStateLabels,
+    bool enablePriorRespectedFpiReversal,
+    bool entriesOnlyMode,
+    bool showFpiBoxes,
+    int fpiBoxTransparency,
+    bool showFpiTags,
+    bool showPeriodDividers,
+    bool showCleanTradeText,
+    bool showExecutionTriangles,
+    bool showClosedTradeLines,
+    bool showPeriodTradeTables,
+    bool showSessionResults,
+    bool showConfluenceStatus,
+    bool showOneMinuteDrawingsThrough15m,
+    float tradeTableGap,
+    float tradeTableHeight,
+    bool enableEnigmaManagement,
+    float enigmaMinimumExpansionPoints,
+    float enigmaExpansionPullbackPoints,
+    int enigmaMinimumLegBars,
+    int enigmaCautionWarnings,
+    int enigmaHardWarnings,
+    float enigmaGivebackWatchPoints,
+    float enigmaMaximumGivebackPoints,
+    int enigmaOpposingConfirmations
+) =>
+    EnigmaConfig.new(
+        enableBot,
+        orderQuantity,
+        forceFlatBy450,
+        enableSequenceEngine,
+        requireFoundationObImbPair,
+        allowOpposingImbFoundationPair,
+        allowControllerAlignedFoundationEntry,
+        allowMacro950FoundationExpectancy,
+        usePhaseExtremeFoundationCandidates,
+        requireAmMacroReclaim,
+        showSequenceStateLabels,
+        enablePriorRespectedFpiReversal,
+        entriesOnlyMode,
+        showFpiBoxes,
+        fpiBoxTransparency,
+        showFpiTags,
+        showPeriodDividers,
+        showCleanTradeText,
+        showExecutionTriangles,
+        showClosedTradeLines,
+        showPeriodTradeTables,
+        showSessionResults,
+        showConfluenceStatus,
+        showOneMinuteDrawingsThrough15m,
+        tradeTableGap,
+        tradeTableHeight,
+        enableEnigmaManagement,
+        enigmaMinimumExpansionPoints,
+        enigmaExpansionPullbackPoints,
+        enigmaMinimumLegBars,
+        enigmaCautionWarnings,
+        enigmaHardWarnings,
+        enigmaGivebackWatchPoints,
+        enigmaMaximumGivebackPoints,
+        enigmaOpposingConfirmations
+    )
+
+export type EnigmaOutput
+    bool buyEntry = false
+    bool sellEntry = false
+    bool exitSignal = false
+    int closedDirection = 0
+
+// Lightweight references used by the ledger helpers. Arrays remain persistent inside run().
+type LedgerRefs
+    array<int> counts
+    array<string> tradeRows
+    array<string> entryRows
+    array<string> slRows
+    array<string> tpRows
+    array<string> resultRows
+    array<int> entryTimes
+    array<bool> openRows
+    array<float> closedPoints
+    array<bool> holding
+    array<bool> pullback
+    array<box> tradeCells
+    array<box> entryCells
+    array<box> slCells
+    array<box> tpCells
+    array<box> resultCells
+
+// Time, FPI, and text helpers
+minuteAt(int offset) => hour(time[offset], TZ) * 60 + minute(time[offset], TZ)
+
+minuteFromTimestamp(int eventTime) => hour(eventTime, TZ) * 60 + minute(eventTime, TZ)
+
+windowIdFromMinute(int minuteOfDay) =>
+    minuteOfDay >= WINDOW_START_MINUTE and minuteOfDay < SESSION_END_MINUTE ? math.min(int(math.floor((minuteOfDay - WINDOW_START_MINUTE) / float(PERIOD_MINUTES))), LAST_WINDOW_ID) : -1
+
+windowIdAt(int offset) =>
+    windowIdFromMinute(minuteAt(offset))
+
+windowIdFromTimestamp(int eventTime) =>
+    windowIdFromMinute(minuteFromTimestamp(eventTime))
+
+sessionPhaseFromMinute(int minuteOfDay) =>
+    minuteOfDay >= SESSION_OPEN_MINUTE and minuteOfDay < NY_AM_END_MINUTE ? SESSION_PHASE_AM :
+     minuteOfDay >= NY_AM_END_MINUTE and minuteOfDay < NY_PM_START_MINUTE ? SESSION_PHASE_LUNCH :
+     minuteOfDay >= NY_PM_START_MINUTE and minuteOfDay < SESSION_END_MINUTE ? SESSION_PHASE_PM :
+     SESSION_PHASE_NONE
+
+phaseStartWindow(int phase) =>
+    phase == SESSION_PHASE_AM ? 0 : phase == SESSION_PHASE_LUNCH ? 4 : phase == SESSION_PHASE_PM ? 8 : 0
+
+controllerWindowForPhase(int phase) =>
+    phase == SESSION_PHASE_AM ? 0 : phase == SESSION_PHASE_PM ? 8 : -1
+
+clockLabel(int totalMinute) =>
+    int h24 = int(math.floor(totalMinute / 60.0))
+    int mins = totalMinute % 60
+    string suffix = h24 >= 12 ? "PM" : "AM"
+    int h12 = h24 % 12 == 0 ? 12 : h24 % 12
+    str.tostring(h12) + ":" + str.tostring(mins, "00") + " " + suffix
+
+periodStartMinute(int windowId) => WINDOW_START_MINUTE + windowId * PERIOD_MINUTES
+periodEndMinute(int windowId) => math.min(SESSION_END_MINUTE, periodStartMinute(windowId) + PERIOD_MINUTES)
+periodLabel(int windowId) => clockLabel(periodStartMinute(windowId))
+periodRangeLabel(int windowId) => periodLabel(windowId) + "-" + clockLabel(periodEndMinute(windowId))
+minuteTimestamp(int totalMinute) => time + (totalMinute - minuteAt(0)) * 60000
+minuteTimestampFrom(int anchorTime, int totalMinute) => anchorTime + (totalMinute - minuteFromTimestamp(anchorTime)) * 60000
+
+bullFpi() => close[1] > open[1] and high[2] < low
+bearFpi() => close[1] < open[1] and low[2] > high
+fpiDirection() => bullFpi() ? 1 : bearFpi() ? -1 : 0
+fpiTop() => bullFpi() ? low : bearFpi() ? low[2] : na
+fpiBottom() => bullFpi() ? high[2] : bearFpi() ? high : na
+positionDirection() => strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
+priceText(float price) => na(price) ? "-" : str.tostring(price, format.mintick)
+sideText(int dir) => dir == 1 ? "BUY" : dir == -1 ? "SELL" : "-"
+closeSideText(int dir) => dir == 1 ? "CLOSE BUY" : dir == -1 ? "CLOSE SELL" : "CLOSE"
+
+fpiBorderColor(int dir) => dir == 1 ? color.new(#2f9e44, 0) : color.new(#c92a2a, 0)
+fpiFillColor(int dir, int transparency) => dir == 1 ? color.new(#2f9e44, transparency) : color.new(#c92a2a, transparency)
+
+tradePoints(int dir, float entryPrice, float exitPrice) => dir == 1 ? exitPrice - entryPrice : entryPrice - exitPrice
+signedPointNumber(float points) => na(points) ? "-" : (points > 0 ? "+" : "") + str.tostring(points, format.mintick)
+signedPointsText(float points) => signedPointNumber(points) + " PTS"
+resultColor(float points) => points > 0 ? color.new(#2b8a3e, 12) : points < 0 ? color.new(#c92a2a, 12) : color.new(#495057, 12)
+
+structureBox(int leftTime, float topPrice, int rightTime, float bottomPrice, int direction, int transparency, string tagText) =>
+    box.new(left=leftTime, top=topPrice, right=rightTime, bottom=bottomPrice, xloc=xloc.bar_time, border_color=fpiBorderColor(direction), border_width=2, bgcolor=fpiFillColor(direction, transparency), text=tagText, text_size=size.large, text_color=fpiBorderColor(direction), text_halign=text.align_center, text_valign=text.align_center)
+
+visualOrderBlockStep(array<float> visualState, int eventTime, float eventOpen, float eventHigh, float eventLow, float eventClose, int anchorDirection) =>
+    int signalDirection = 0
+    float signalTop = na
+    float signalBottom = na
+    int signalLeftTime = na
+    bool downCloseCandle = eventClose < eventOpen
+    bool upCloseCandle = eventClose > eventOpen
+
+    // State slots 0-12 are bullish; 13-25 are the symmetric bearish state.
+    bool bullishRunActive = array.get(visualState, 0) == 1.0
+    if downCloseCandle
+        if not bullishRunActive
+            array.set(visualState, 0, 1.0)
+            array.set(visualState, 1, eventHigh)
+            array.set(visualState, 2, eventLow)
+            array.set(visualState, 3, float(eventTime))
+        else
+            array.set(visualState, 1, math.max(array.get(visualState, 1), eventHigh))
+            array.set(visualState, 2, math.min(array.get(visualState, 2), eventLow))
+        array.set(visualState, 4, float(eventTime))
+    else if bullishRunActive
+        float completedTop = array.get(visualState, 1)
+        float completedBottom = array.get(visualState, 2)
+        bool candidateFound = array.get(visualState, 5) == 1.0
+        bool replaceCandidate = not candidateFound or na(array.get(visualState, 7)) or completedBottom < array.get(visualState, 7)
+        if replaceCandidate
+            array.set(visualState, 5, 1.0)
+            array.set(visualState, 6, completedTop)
+            array.set(visualState, 7, completedBottom)
+            array.set(visualState, 8, array.get(visualState, 3))
+            array.set(visualState, 9, array.get(visualState, 4))
+            array.set(visualState, 10, 0.0)
+            array.set(visualState, 11, na)
+            array.set(visualState, 12, 0.0)
+        array.set(visualState, 0, 0.0)
+        array.set(visualState, 1, na)
+        array.set(visualState, 2, na)
+        array.set(visualState, 3, na)
+        array.set(visualState, 4, na)
+
+    bool bearishRunActive = array.get(visualState, 13) == 1.0
+    if upCloseCandle
+        if not bearishRunActive
+            array.set(visualState, 13, 1.0)
+            array.set(visualState, 14, eventHigh)
+            array.set(visualState, 15, eventLow)
+            array.set(visualState, 16, float(eventTime))
+        else
+            array.set(visualState, 14, math.max(array.get(visualState, 14), eventHigh))
+            array.set(visualState, 15, math.min(array.get(visualState, 15), eventLow))
+        array.set(visualState, 17, float(eventTime))
+    else if bearishRunActive
+        float completedTop = array.get(visualState, 14)
+        float completedBottom = array.get(visualState, 15)
+        bool candidateFound = array.get(visualState, 18) == 1.0
+        bool replaceCandidate = not candidateFound or na(array.get(visualState, 19)) or completedTop > array.get(visualState, 19)
+        if replaceCandidate
+            array.set(visualState, 18, 1.0)
+            array.set(visualState, 19, completedTop)
+            array.set(visualState, 20, completedBottom)
+            array.set(visualState, 21, array.get(visualState, 16))
+            array.set(visualState, 22, array.get(visualState, 17))
+            array.set(visualState, 23, 0.0)
+            array.set(visualState, 24, na)
+            array.set(visualState, 25, 0.0)
+        array.set(visualState, 13, 0.0)
+        array.set(visualState, 14, na)
+        array.set(visualState, 15, na)
+        array.set(visualState, 16, na)
+        array.set(visualState, 17, na)
+
+    if anchorDirection == 1 and array.get(visualState, 5) == 1.0 and float(eventTime) > array.get(visualState, 9)
+        float candidateTop = array.get(visualState, 6)
+        float candidateBottom = array.get(visualState, 7)
+        bool candidateUsed = array.get(visualState, 12) == 1.0
+        bool breakConfirmed = array.get(visualState, 10) == 1.0
+        if eventClose < candidateBottom
+            array.set(visualState, 5, 0.0)
+            array.set(visualState, 10, 0.0)
+        else if not candidateUsed
+            if not breakConfirmed and eventClose > candidateTop
+                array.set(visualState, 10, 1.0)
+                array.set(visualState, 11, float(eventTime))
+            else if breakConfirmed and float(eventTime) > array.get(visualState, 11)
+                bool successfulRetest = eventLow <= candidateTop and eventHigh >= candidateBottom and eventClose > candidateTop
+                if successfulRetest
+                    array.set(visualState, 12, 1.0)
+                    signalDirection := 1
+                    signalTop := candidateTop
+                    signalBottom := candidateBottom
+                    signalLeftTime := int(array.get(visualState, 8))
+
+    if anchorDirection == -1 and array.get(visualState, 18) == 1.0 and float(eventTime) > array.get(visualState, 22)
+        float candidateTop = array.get(visualState, 19)
+        float candidateBottom = array.get(visualState, 20)
+        bool candidateUsed = array.get(visualState, 25) == 1.0
+        bool breakConfirmed = array.get(visualState, 23) == 1.0
+        if eventClose > candidateTop
+            array.set(visualState, 18, 0.0)
+            array.set(visualState, 23, 0.0)
+        else if not candidateUsed
+            if not breakConfirmed and eventClose < candidateBottom
+                array.set(visualState, 23, 1.0)
+                array.set(visualState, 24, float(eventTime))
+            else if breakConfirmed and float(eventTime) > array.get(visualState, 24)
+                bool successfulRetest = eventHigh >= candidateBottom and eventLow <= candidateTop and eventClose < candidateBottom
+                if successfulRetest
+                    array.set(visualState, 25, 1.0)
+                    signalDirection := -1
+                    signalTop := candidateTop
+                    signalBottom := candidateBottom
+                    signalLeftTime := int(array.get(visualState, 21))
+
+    [signalDirection, signalTop, signalBottom, signalLeftTime]
+
+addConfluence(array<int> kinds, array<int> sourceBars, array<int> windows, array<float> tops, array<float> bottoms, array<float> boundaries, array<bool> validStates, array<box> structureBoxes, int structureKind, int sourceBar, int sourceWindow, int direction, float structureTop, float structureBottom, box structureBox) =>
+    bool alreadyRecorded = false
+    int structureCount = array.size(kinds)
+    if structureCount > 0
+        for structureIndex = 0 to structureCount - 1
+            alreadyRecorded := alreadyRecorded or (array.get(kinds, structureIndex) == structureKind and array.get(sourceBars, structureIndex) == sourceBar and array.get(windows, structureIndex) == sourceWindow)
+    if not alreadyRecorded and direction != 0 and not na(sourceBar) and not na(structureTop) and not na(structureBottom)
+        float holdBoundary = structureKind == SOURCE_BGOB ? (structureTop + structureBottom) / 2.0 : direction == 1 ? structureBottom : structureTop
+        array.push(kinds, structureKind)
+        array.push(sourceBars, sourceBar)
+        array.push(windows, sourceWindow)
+        array.push(tops, structureTop)
+        array.push(bottoms, structureBottom)
+        array.push(boundaries, holdBoundary)
+        array.push(validStates, true)
+        array.push(structureBoxes, structureBox)
+    not alreadyRecorded
+
+confluenceSummary(int anchorDirection, int regime, int validCount, float masterBoundary, array<float> boundaries, array<bool> validStates, bool reversalActive, int reversalDirection, int supportIntervalCount, int resistanceIntervalCount) =>
+    string biasName = anchorDirection == 1 ? "BULLISH" : anchorDirection == -1 ? "BEARISH" : "WAITING"
+    string regimeName = regime == SESSION_REGIME_ALIGNED ? "ALIGNED" : regime == SESSION_REGIME_JUDAS ? "JUDAS" : "UNRESOLVED"
+    string foundationName = anchorDirection == 1 ? "HOLD FLOOR" : anchorDirection == -1 ? "HOLD CEILING" : "FOUNDATION"
+    array<float> orderedLevels = array.new<float>(0)
+    int structureCount = array.size(boundaries)
+    if structureCount > 0
+        for structureIndex = 0 to structureCount - 1
+            if array.get(validStates, structureIndex)
+                array.push(orderedLevels, array.get(boundaries, structureIndex))
+    if array.size(orderedLevels) > 1
+        array.sort(orderedLevels, anchorDirection == -1 ? order.descending : order.ascending)
+    string levelList = "-"
+    int distinctCount = 0
+    float previousLevel = na
+    int orderedCount = array.size(orderedLevels)
+    if orderedCount > 0
+        levelList := ""
+        for levelIndex = 0 to orderedCount - 1
+            float currentLevel = array.get(orderedLevels, levelIndex)
+            bool distinctLevel = na(previousLevel) or math.abs(currentLevel - previousLevel) > syminfo.mintick * 0.5
+            if distinctLevel
+                distinctCount += 1
+                if distinctCount <= 8
+                    levelList += (distinctCount == 1 ? "" : " | ") + priceText(currentLevel)
+                previousLevel := currentLevel
+        if distinctCount > 8
+            levelList += " | +" + str.tostring(distinctCount - 8) + " MORE"
+    string orderName = anchorDirection == -1 ? "HIGH TO LOW" : "LOW TO HIGH"
+    string reversalText = reversalActive ? " | REVERSAL MODE: " + (reversalDirection == 1 ? "BULLISH" : "BEARISH") : ""
+    "SESSION FPI: " + biasName + " | " + regimeName + reversalText + " | " + str.tostring(validCount) + " VALID | " + foundationName + ": " + priceText(masterBoundary) + "\nSUPPORT INTERVALS: " + str.tostring(supportIntervalCount) + " | RESISTANCE INTERVALS: " + str.tostring(resistanceIntervalCount) + "\nCONFLUENCE " + orderName + ": " + levelList
+
+
+ledgerIndex(int window, int slot) => window * MAX_LEDGER_ROWS + slot
+
+ledgerColumn(array<string> rows, int window, int count, string emptyValue) =>
+    string output = count == 0 ? emptyValue : ""
+    if count > 0
+        for slot = 0 to count - 1
+            output += (slot == 0 ? "" : "\n") + array.get(rows, ledgerIndex(window, slot))
+    output
+
+dailyTradeCount(LedgerRefs ledger) =>
+    int total = 0
+    for window = 0 to LAST_WINDOW_ID
+        total += array.get(ledger.counts, window)
+    total
+
+dailyTradeLogText(LedgerRefs ledger) =>
+    string output = "DAILY TRADES\n# | TIME | SIDE | ENTRY | SL | TP/EXIT | PTS"
+    int tradeNumber = 0
+    for window = 0 to LAST_WINDOW_ID
+        int count = array.get(ledger.counts, window)
+        if count > 0
+            for slot = 0 to count - 1
+                int index = ledgerIndex(window, slot)
+                tradeNumber += 1
+                int entryTimestamp = array.get(ledger.entryTimes, index)
+                string entryTimeText = na(entryTimestamp) ? "-" : str.format_time(entryTimestamp, "HH:mm", TZ)
+                output += "\n" + str.tostring(tradeNumber) + " | " + entryTimeText + " | " + array.get(ledger.tradeRows, index) + " | " + array.get(ledger.entryRows, index) + " | " + array.get(ledger.slRows, index) + " | " + array.get(ledger.tpRows, index) + " | " + array.get(ledger.resultRows, index)
+    if tradeNumber == 0
+        output += "\nNO TRADES"
+    output
+
+renderLedger(
+    LedgerRefs ledger,
+    int window,
+    bool recordedTradeOpen,
+    float recordedEntry,
+    float recordedSl,
+    bool reversalModeActive,
+    int reversalModeDirection,
+    int sessionAnchorDirection
+) =>
+    int count = array.get(ledger.counts, window)
+    bool holding = array.get(ledger.holding, window)
+    bool pullback = array.get(ledger.pullback, window)
+    float windowPoints = array.get(ledger.closedPoints, window)
+    bool windowHasOpenTrade = false
+    if count > 0
+        for slot = 0 to count - 1
+            windowHasOpenTrade := windowHasOpenTrade or array.get(ledger.openRows, ledgerIndex(window, slot))
+    box tradeCell = array.get(ledger.tradeCells, window)
+    box entryCell = array.get(ledger.entryCells, window)
+    box slCell = array.get(ledger.slCells, window)
+    box tpCell = array.get(ledger.tpCells, window)
+    box resultCell = array.get(ledger.resultCells, window)
+    string heldEntry = holding and count == 0 and recordedTradeOpen ? priceText(recordedEntry) : "-"
+    string heldSl = holding and count == 0 and recordedTradeOpen ? priceText(recordedSl) : "-"
+    int displayedBiasDirection = reversalModeActive ? reversalModeDirection : sessionAnchorDirection
+    string heldNarrative = holding ? "HOLDING\nMAIN BIAS: " + (displayedBiasDirection == 1 ? "BULLISH" : displayedBiasDirection == -1 ? "BEARISH" : "WAITING") + (reversalModeActive ? "\nREVERSAL MODE" : pullback ? "\nPOTENTIAL PULLBACK INTERVAL" : "") : "-"
+    if not na(tradeCell)
+        box.set_text(tradeCell, periodLabel(window) + "\nTRADE\n" + ledgerColumn(ledger.tradeRows, window, count, heldNarrative))
+    if not na(entryCell)
+        box.set_text(entryCell, "ENTRY\n" + ledgerColumn(ledger.entryRows, window, count, heldEntry))
+    if not na(slCell)
+        box.set_text(slCell, "SL\n" + ledgerColumn(ledger.slRows, window, count, heldSl))
+    if not na(tpCell)
+        box.set_text(tpCell, "TP\n" + ledgerColumn(ledger.tpRows, window, count, "-"))
+    if not na(resultCell)
+        box.set_text(resultCell, "PTS " + signedPointNumber(windowPoints) + "\n" + ledgerColumn(ledger.resultRows, window, count, holding ? "HOLDING" : "NO TRADE"))
+        box.set_bgcolor(resultCell, (holding or windowHasOpenTrade) and windowPoints == 0 ? color.new(#0b7285, 12) : resultColor(windowPoints))
+    0
