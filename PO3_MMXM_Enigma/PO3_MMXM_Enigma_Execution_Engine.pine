@@ -1,7 +1,7 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
 // © SunovaBeach
 //@version=6
-// @description Compact PO3 MMXM Enigma execution coordinator. Reuses the proven version-2 engine and adds the post-OB lowest/highest IMB first-retest entry path without exceeding Pine's main-body compilation limit.
+// @description Compact PO3 MMXM Enigma execution coordinator. Reuses the version-2 engine and adds local OB-retest plus post-OB directional IMB first-retest entries across every catalog state without exceeding Pine's main-body compilation limit.
 library("PO3MMXMEnigmaExecutionEngine", overlay = true, dynamic_requests = true)
 
 // TradingView libraries may import previous versions of themselves. Version 2 remains
@@ -238,6 +238,7 @@ foundationStep(EnigmaConfig cfg) =>
     var float bullishObTop = na
     var float bullishObBottom = na
     var int bullishObConfirmBar = na
+    var bool bullishObRetested = false
 
     var bool bearishRunActive = false
     var float bearishRunTop = na
@@ -252,6 +253,7 @@ foundationStep(EnigmaConfig cfg) =>
     var float bearishObTop = na
     var float bearishObBottom = na
     var int bearishObConfirmBar = na
+    var bool bearishObRetested = false
 
     var bool bullishImbFound = false
     var int bullishImbDirection = 0
@@ -287,6 +289,7 @@ foundationStep(EnigmaConfig cfg) =>
         bullishObTop := na
         bullishObBottom := na
         bullishObConfirmBar := na
+        bullishObRetested := false
         bullishImbFound := false
         bullishImbDirection := 0
         bullishImbTop := na
@@ -307,6 +310,7 @@ foundationStep(EnigmaConfig cfg) =>
         bearishObTop := na
         bearishObBottom := na
         bearishObConfirmBar := na
+        bearishObRetested := false
         bearishImbFound := false
         bearishImbDirection := 0
         bearishImbTop := na
@@ -338,7 +342,7 @@ foundationStep(EnigmaConfig cfg) =>
         bool bearishBody = close < open
         bool bullishBody = close > open
 
-        // A bullish OB is the lowest completed run of consecutive down-close candles.
+        // Every newly completed down-close run can become the active local bullish OB.
         if bearishBody
             if not bullishRunActive
                 bullishRunActive := true
@@ -349,18 +353,16 @@ foundationStep(EnigmaConfig cfg) =>
                 bullishRunBottom := math.min(bullishRunBottom, low)
             bullishRunEndBar := bar_index
         else if bullishRunActive
-            bool replaceBullishCandidate = not bullishCandidateFound or bullishRunBottom < bullishCandidateBottom
-            if replaceBullishCandidate
-                bullishCandidateFound := true
-                bullishCandidateTop := bullishRunTop
-                bullishCandidateBottom := bullishRunBottom
-                bullishCandidateEndBar := bullishRunEndBar
+            bullishCandidateFound := true
+            bullishCandidateTop := bullishRunTop
+            bullishCandidateBottom := bullishRunBottom
+            bullishCandidateEndBar := bullishRunEndBar
             bullishRunActive := false
             bullishRunTop := na
             bullishRunBottom := na
             bullishRunEndBar := na
 
-        // A bearish OB is the highest completed run of consecutive up-close candles.
+        // Every newly completed up-close run can become the active local bearish OB.
         if bullishBody
             if not bearishRunActive
                 bearishRunActive := true
@@ -371,12 +373,10 @@ foundationStep(EnigmaConfig cfg) =>
                 bearishRunBottom := math.min(bearishRunBottom, low)
             bearishRunEndBar := bar_index
         else if bearishRunActive
-            bool replaceBearishCandidate = not bearishCandidateFound or bearishRunTop > bearishCandidateTop
-            if replaceBearishCandidate
-                bearishCandidateFound := true
-                bearishCandidateTop := bearishRunTop
-                bearishCandidateBottom := bearishRunBottom
-                bearishCandidateEndBar := bearishRunEndBar
+            bearishCandidateFound := true
+            bearishCandidateTop := bearishRunTop
+            bearishCandidateBottom := bearishRunBottom
+            bearishCandidateEndBar := bearishRunEndBar
             bearishRunActive := false
             bearishRunTop := na
             bearishRunBottom := na
@@ -389,6 +389,7 @@ foundationStep(EnigmaConfig cfg) =>
             bullishObTop := bullishCandidateTop
             bullishObBottom := bullishCandidateBottom
             bullishObConfirmBar := bar_index
+            bullishObRetested := false
             bullishImbFound := false
             bullishImbDirection := 0
             bullishImbTop := na
@@ -403,6 +404,7 @@ foundationStep(EnigmaConfig cfg) =>
             bearishObTop := bearishCandidateTop
             bearishObBottom := bearishCandidateBottom
             bearishObConfirmBar := bar_index
+            bearishObRetested := false
             bearishImbFound := false
             bearishImbDirection := 0
             bearishImbTop := na
@@ -410,9 +412,17 @@ foundationStep(EnigmaConfig cfg) =>
             bearishImbFormationBar := na
             bearishImbUsed := false
 
-        // The displacement candle that validates the OB may also form the first eligible
-        // imbalance, so formation on the confirmation bar is intentionally allowed.
-        if imbalanceDir != 0 and bullishObConfirmed and not na(bullishObConfirmBar) and bar_index >= bullishObConfirmBar
+        bool bullishObRetestNow = bullishObConfirmed and not bullishObRetested and bar_index > bullishObConfirmBar and low <= bullishObTop and high >= bullishObBottom and close > bullishObTop
+        if bullishObRetestNow
+            bullishObRetested := true
+
+        bool bearishObRetestNow = bearishObConfirmed and not bearishObRetested and bar_index > bearishObConfirmBar and high >= bearishObBottom and low <= bearishObTop and close < bearishObBottom
+        if bearishObRetestNow
+            bearishObRetested := true
+
+        // After the local OB has validated and successfully retested, retain the lowest
+        // bullish IMB or highest bearish IMB created afterward.
+        if imbalanceDir == 1 and bullishObConfirmed and bullishObRetested and not na(bullishObConfirmBar) and bar_index > bullishObConfirmBar
             bool replaceLowestImb = not bullishImbFound or currentImbBottom < bullishImbBottom
             if replaceLowestImb
                 bullishImbFound := true
@@ -422,7 +432,7 @@ foundationStep(EnigmaConfig cfg) =>
                 bullishImbFormationBar := bar_index
                 bullishImbUsed := false
 
-        if imbalanceDir != 0 and bearishObConfirmed and not na(bearishObConfirmBar) and bar_index >= bearishObConfirmBar
+        if imbalanceDir == -1 and bearishObConfirmed and bearishObRetested and not na(bearishObConfirmBar) and bar_index > bearishObConfirmBar
             bool replaceHighestImb = not bearishImbFound or currentImbTop > bearishImbTop
             if replaceHighestImb
                 bearishImbFound := true
@@ -432,19 +442,14 @@ foundationStep(EnigmaConfig cfg) =>
                 bearishImbFormationBar := bar_index
                 bearishImbUsed := false
 
-        float phaseMidpoint = not na(phaseHigh) and not na(phaseLow) ? (phaseHigh + phaseLow) * 0.5 : close
-        bool bullishLocationAllowed = not cfg.enforcePremiumDiscountEntries or close <= phaseMidpoint
-        bool bearishLocationAllowed = not cfg.enforcePremiumDiscountEntries or close >= phaseMidpoint
-
         bool bullishZoneOverlap = bullishImbFound and low <= bullishImbTop and high >= bullishImbBottom
         bool bullishOutsideClose = bullishImbFound and close > bullishImbTop
-        bool bullishComponentsRespected = bullishObConfirmed and close >= bullishObBottom and (bullishImbDirection == -1 or close >= bullishImbBottom)
-        float bullishExtension = bullishObConfirmed ? math.max(0.0, close - bullishObTop) : 1000000.0
-        bool bullishNotChased = bullishExtension <= cfg.maximumEarlyFoundationExtensionPoints
+        bool bullishComponentsRespected = bullishObConfirmed and bullishObRetested and close >= bullishObBottom and close >= bullishImbBottom
         bool bullishControllerAligned = controllerFound and controllerDirection == 1
+        bool bullishDirectionEnabled = bullishControllerAligned ? cfg.allowControllerAlignedFoundationEntry : cfg.allowEarlyCounterControllerFoundationEntry
         bool bullishRetestNow = bullishImbFound and not bullishImbUsed and bar_index > bullishImbFormationBar and bullishZoneOverlap and bullishOutsideClose
 
-        if cfg.allowControllerAlignedFoundationEntry and bullishControllerAligned and bullishRetestNow and bullishComponentsRespected and bullishLocationAllowed and bullishNotChased
+        if bullishDirectionEnabled and bullishRetestNow and bullishComponentsRespected
             bullishImbUsed := true
             buySignal := true
             signalZoneTop := bullishImbTop
@@ -455,13 +460,12 @@ foundationStep(EnigmaConfig cfg) =>
 
         bool bearishZoneOverlap = bearishImbFound and high >= bearishImbBottom and low <= bearishImbTop
         bool bearishOutsideClose = bearishImbFound and close < bearishImbBottom
-        bool bearishComponentsRespected = bearishObConfirmed and close <= bearishObTop and (bearishImbDirection == 1 or close <= bearishImbTop)
-        float bearishExtension = bearishObConfirmed ? math.max(0.0, bearishObBottom - close) : 1000000.0
-        bool bearishNotChased = bearishExtension <= cfg.maximumEarlyFoundationExtensionPoints
+        bool bearishComponentsRespected = bearishObConfirmed and bearishObRetested and close <= bearishObTop and close <= bearishImbTop
         bool bearishControllerAligned = controllerFound and controllerDirection == -1
+        bool bearishDirectionEnabled = bearishControllerAligned ? cfg.allowControllerAlignedFoundationEntry : cfg.allowEarlyCounterControllerFoundationEntry
         bool bearishRetestNow = bearishImbFound and not bearishImbUsed and bar_index > bearishImbFormationBar and bearishZoneOverlap and bearishOutsideClose
 
-        if cfg.allowControllerAlignedFoundationEntry and bearishControllerAligned and bearishRetestNow and bearishComponentsRespected and bearishLocationAllowed and bearishNotChased
+        if bearishDirectionEnabled and bearishRetestNow and bearishComponentsRespected
             bearishImbUsed := true
             sellSignal := true
             signalZoneTop := bearishImbTop
