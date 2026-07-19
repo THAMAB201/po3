@@ -7,8 +7,6 @@ library("PO3MMXMEnigmaExecutionEngine", overlay = true, dynamic_requests = true)
 // Publish both dependency libraries privately as version 1 before publishing this engine.
 import SunovaBeach/PO3MMXMEnigmaStateManager/1 as stateManager
 import SunovaBeach/PO3MMXMEnigmaCatalogResolver/1 as catalog
-// Dedicated structural foundation signals; this library never places orders.
-import SunovaBeach/PO3MMXMEnigmaFoundationEngine/1 as foundation
 
 const string TZ = "America/New_York"
 const string NY_SESSION = "0930-1700"
@@ -563,153 +561,6 @@ makeLedgerCell(int left, int right, float top, float bottom, string cellText) =>
     box.new(left=left, top=top, right=right, bottom=bottom, xloc=xloc.bar_time, border_color=color.new(color.black, 0), border_width=1, bgcolor=color.new(#212529, 12), text=cellText, text_size=size.normal, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center, text_font_family=font.family_monospace)
 
 
-renderMtfVisuals(EnigmaConfig cfg, bool isHigherVisualTimeframe, bool isSubMinuteVisualTimeframe, bool drawStructureVisuals, bool drawStructureTags) =>
-    // Higher-chart visual reconstruction state. Execution remains strictly one-minute;
-    // these variables rebuild the one-minute FPI drawings without changing order timing.
-    var array<bool> mtfSelectedByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
-    var bool mtfMacro950Found = false
-    var int mtfSessionAnchorDirection = 0
-    var array<float> mtfOrderBlockState = array.new<float>(26, na)
-    var int mtfLastProcessedTime = na
-    var int mtfPrevious2Time = na
-    var float mtfPrevious2High = na
-    var float mtfPrevious2Low = na
-    var int mtfPrevious1Time = na
-    var float mtfPrevious1Open = na
-    var float mtfPrevious1High = na
-    var float mtfPrevious1Low = na
-    var float mtfPrevious1Close = na
-
-    // Reconstruct the one-minute FPI drawings when the chart itself is 2-15 minutes.
-    // This is deliberately visual-only: TradingView strategies still place orders on
-    // the chart timeframe, so all economic execution remains restricted to the 1m chart.
-    if cfg.showOneMinuteDrawingsThrough15m and isHigherVisualTimeframe
-        [oneMinuteTimes, oneMinuteCloseTimes, oneMinuteOpens, oneMinuteHighs, oneMinuteLows, oneMinuteCloses] = request.security_lower_tf(syminfo.tickerid, "1", [time, time_close, open, high, low, close])
-        int intrabarCount = array.size(oneMinuteTimes)
-        if intrabarCount > 0
-            for intrabarIndex = 0 to intrabarCount - 1
-                int eventTime = array.get(oneMinuteTimes, intrabarIndex)
-                int eventCloseTime = array.get(oneMinuteCloseTimes, intrabarIndex)
-                bool eventMinuteConfirmed = barstate.ishistory or eventCloseTime <= timenow
-                if eventMinuteConfirmed and (na(mtfLastProcessedTime) or eventTime > mtfLastProcessedTime)
-                    float eventOpen = array.get(oneMinuteOpens, intrabarIndex)
-                    float eventHigh = array.get(oneMinuteHighs, intrabarIndex)
-                    float eventLow = array.get(oneMinuteLows, intrabarIndex)
-                    float eventClose = array.get(oneMinuteCloses, intrabarIndex)
-                    int eventMinute = minuteFromTimestamp(eventTime)
-
-                    if eventMinute == SESSION_OPEN_MINUTE
-                        for visualWindow = 0 to LAST_WINDOW_ID
-                            array.set(mtfSelectedByWindow, visualWindow, false)
-                        mtfMacro950Found := false
-                    if eventMinute == SESSION_OPEN_MINUTE or eventMinute == NY_AM_END_MINUTE or eventMinute == NY_PM_START_MINUTE
-                        mtfSessionAnchorDirection := 0
-                        array.fill(mtfOrderBlockState, na)
-
-                    if not na(mtfPrevious2Time) and not na(mtfPrevious1Time)
-                        bool visualBullFpi = mtfPrevious1Close > mtfPrevious1Open and mtfPrevious2High < eventLow
-                        bool visualBearFpi = mtfPrevious1Close < mtfPrevious1Open and mtfPrevious2Low > eventHigh
-                        int visualDirection = visualBullFpi ? 1 : visualBearFpi ? -1 : 0
-                        int visualMiddleMinute = minuteFromTimestamp(mtfPrevious1Time)
-                        int visualWindow = windowIdFromMinute(visualMiddleMinute)
-                        float visualTop = visualBullFpi ? eventLow : visualBearFpi ? mtfPrevious2Low : na
-                        float visualBottom = visualBullFpi ? mtfPrevious2High : visualBearFpi ? eventHigh : na
-                        bool visualMiddleInMacro950 = visualMiddleMinute >= MACRO_950_START_MINUTE and visualMiddleMinute < MACRO_950_END_MINUTE
-
-                        if visualDirection != 0 and visualMiddleInMacro950 and not mtfMacro950Found
-                            mtfMacro950Found := true
-                            if drawStructureVisuals
-                                box.new(left=mtfPrevious2Time, top=visualTop, right=minuteTimestampFrom(eventTime, MACRO_950_TRADE_END), bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? "9:50-10:10 FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
-
-                        bool visualMiddleInExactPeriod = visualWindow >= 0 and visualMiddleMinute >= periodStartMinute(visualWindow) and visualMiddleMinute < periodEndMinute(visualWindow)
-                        bool visualFirstFpi = visualMiddleInExactPeriod and visualDirection != 0 and not array.get(mtfSelectedByWindow, visualWindow)
-                        if visualFirstFpi
-                            array.set(mtfSelectedByWindow, visualWindow, true)
-                            int visualPhase = sessionPhaseFromMinute(visualMiddleMinute)
-                            if mtfSessionAnchorDirection == 0 and visualWindow == controllerWindowForPhase(visualPhase)
-                                mtfSessionAnchorDirection := visualDirection
-                            if drawStructureVisuals
-                                int visualStartTime = minuteTimestampFrom(eventTime, periodStartMinute(visualWindow))
-                                int visualEndTime = minuteTimestampFrom(eventTime, periodEndMinute(visualWindow))
-                                int visualLeftTime = math.max(mtfPrevious2Time, visualStartTime)
-                                box.new(left=visualLeftTime, top=visualTop, right=visualEndTime, bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? periodLabel(visualWindow) + " FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
-
-                    if eventMinute >= SESSION_OPEN_MINUTE and eventMinute < SESSION_END_MINUTE
-                        [visualObDirection, visualObTop, visualObBottom, visualObLeftTime] = visualOrderBlockStep(mtfOrderBlockState, eventTime, eventOpen, eventHigh, eventLow, eventClose, mtfSessionAnchorDirection)
-                        if visualObDirection != 0 and drawStructureVisuals
-                            box.new(left=visualObLeftTime, top=visualObTop, right=minuteTimestampFrom(eventTime, SESSION_END_MINUTE), bottom=visualObBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualObDirection), border_width=2, bgcolor=fpiFillColor(visualObDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? (visualObDirection == 1 ? "BULLISH OB" : "BEARISH OB") : "", text_size=size.large, text_color=fpiBorderColor(visualObDirection), text_halign=text.align_center, text_valign=text.align_center)
-
-                    mtfPrevious2Time := mtfPrevious1Time
-                    mtfPrevious2High := mtfPrevious1High
-                    mtfPrevious2Low := mtfPrevious1Low
-                    mtfPrevious1Time := eventTime
-                    mtfPrevious1Open := eventOpen
-                    mtfPrevious1High := eventHigh
-                    mtfPrevious1Low := eventLow
-                    mtfPrevious1Close := eventClose
-                    mtfLastProcessedTime := eventTime
-
-    // Seconds charts request the same one-minute source as a higher timeframe. The
-    // confirmed minute is processed once, producing geometry identical to the 1m chart.
-    if cfg.showOneMinuteDrawingsThrough15m and isSubMinuteVisualTimeframe
-        [oneMinuteTime, oneMinuteCloseTime, oneMinuteOpen, oneMinuteHigh, oneMinuteLow, oneMinuteClose] = request.security(syminfo.tickerid, "1", [time, time_close, open, high, low, close], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
-        bool oneMinuteConfirmed = barstate.ishistory or oneMinuteCloseTime <= timenow
-        if oneMinuteConfirmed and not na(oneMinuteTime) and (na(mtfLastProcessedTime) or oneMinuteTime > mtfLastProcessedTime)
-            int eventMinute = minuteFromTimestamp(oneMinuteTime)
-            if eventMinute == SESSION_OPEN_MINUTE
-                for visualWindow = 0 to LAST_WINDOW_ID
-                    array.set(mtfSelectedByWindow, visualWindow, false)
-                mtfMacro950Found := false
-            if eventMinute == SESSION_OPEN_MINUTE or eventMinute == NY_AM_END_MINUTE or eventMinute == NY_PM_START_MINUTE
-                mtfSessionAnchorDirection := 0
-                array.fill(mtfOrderBlockState, na)
-
-            if not na(mtfPrevious2Time) and not na(mtfPrevious1Time)
-                bool visualBullFpi = mtfPrevious1Close > mtfPrevious1Open and mtfPrevious2High < oneMinuteLow
-                bool visualBearFpi = mtfPrevious1Close < mtfPrevious1Open and mtfPrevious2Low > oneMinuteHigh
-                int visualDirection = visualBullFpi ? 1 : visualBearFpi ? -1 : 0
-                int visualMiddleMinute = minuteFromTimestamp(mtfPrevious1Time)
-                int visualWindow = windowIdFromMinute(visualMiddleMinute)
-                float visualTop = visualBullFpi ? oneMinuteLow : visualBearFpi ? mtfPrevious2Low : na
-                float visualBottom = visualBullFpi ? mtfPrevious2High : visualBearFpi ? oneMinuteHigh : na
-                bool visualMiddleInMacro950 = visualMiddleMinute >= MACRO_950_START_MINUTE and visualMiddleMinute < MACRO_950_END_MINUTE
-
-                if visualDirection != 0 and visualMiddleInMacro950 and not mtfMacro950Found
-                    mtfMacro950Found := true
-                    if drawStructureVisuals
-                        box.new(left=mtfPrevious2Time, top=visualTop, right=minuteTimestampFrom(oneMinuteTime, MACRO_950_TRADE_END), bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? "9:50-10:10 FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
-
-                bool visualMiddleInExactPeriod = visualWindow >= 0 and visualMiddleMinute >= periodStartMinute(visualWindow) and visualMiddleMinute < periodEndMinute(visualWindow)
-                bool visualFirstFpi = visualMiddleInExactPeriod and visualDirection != 0 and not array.get(mtfSelectedByWindow, visualWindow)
-                if visualFirstFpi
-                    array.set(mtfSelectedByWindow, visualWindow, true)
-                    int visualPhase = sessionPhaseFromMinute(visualMiddleMinute)
-                    if mtfSessionAnchorDirection == 0 and visualWindow == controllerWindowForPhase(visualPhase)
-                        mtfSessionAnchorDirection := visualDirection
-                    if drawStructureVisuals
-                        int visualStartTime = minuteTimestampFrom(oneMinuteTime, periodStartMinute(visualWindow))
-                        int visualEndTime = minuteTimestampFrom(oneMinuteTime, periodEndMinute(visualWindow))
-                        int visualLeftTime = math.max(mtfPrevious2Time, visualStartTime)
-                        box.new(left=visualLeftTime, top=visualTop, right=visualEndTime, bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? periodLabel(visualWindow) + " FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
-
-            if eventMinute >= SESSION_OPEN_MINUTE and eventMinute < SESSION_END_MINUTE
-                [visualObDirection, visualObTop, visualObBottom, visualObLeftTime] = visualOrderBlockStep(mtfOrderBlockState, oneMinuteTime, oneMinuteOpen, oneMinuteHigh, oneMinuteLow, oneMinuteClose, mtfSessionAnchorDirection)
-                if visualObDirection != 0 and drawStructureVisuals
-                    box.new(left=visualObLeftTime, top=visualObTop, right=minuteTimestampFrom(oneMinuteTime, SESSION_END_MINUTE), bottom=visualObBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualObDirection), border_width=2, bgcolor=fpiFillColor(visualObDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? (visualObDirection == 1 ? "BULLISH OB" : "BEARISH OB") : "", text_size=size.large, text_color=fpiBorderColor(visualObDirection), text_halign=text.align_center, text_valign=text.align_center)
-
-            mtfPrevious2Time := mtfPrevious1Time
-            mtfPrevious2High := mtfPrevious1High
-            mtfPrevious2Low := mtfPrevious1Low
-            mtfPrevious1Time := oneMinuteTime
-            mtfPrevious1Open := oneMinuteOpen
-            mtfPrevious1High := oneMinuteHigh
-            mtfPrevious1Low := oneMinuteLow
-            mtfPrevious1Close := oneMinuteClose
-            mtfLastProcessedTime := oneMinuteTime
-
-    0
-
-
 export run(EnigmaConfig cfg) =>
     bool inSession = not na(time(timeframe.period, NY_SESSION, TZ))
     bool isOneMinute = timeframe.isminutes and timeframe.multiplier == 1
@@ -991,6 +842,21 @@ export run(EnigmaConfig cfg) =>
     var bool macro950BgobUsed = false
     var box macro950BgobBox = na
 
+    // Higher-chart visual reconstruction state. Execution remains strictly one-minute;
+    // these variables rebuild the one-minute FPI drawings without changing order timing.
+    var array<bool> mtfSelectedByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var bool mtfMacro950Found = false
+    var int mtfSessionAnchorDirection = 0
+    var array<float> mtfOrderBlockState = array.new<float>(26, na)
+    var int mtfLastProcessedTime = na
+    var int mtfPrevious2Time = na
+    var float mtfPrevious2High = na
+    var float mtfPrevious2Low = na
+    var int mtfPrevious1Time = na
+    var float mtfPrevious1Open = na
+    var float mtfPrevious1High = na
+    var float mtfPrevious1Low = na
+    var float mtfPrevious1Close = na
 
     var float lastSwingHighClose = na
     var float lastSwingLowClose = na
@@ -1154,7 +1020,132 @@ export run(EnigmaConfig cfg) =>
     if drawPeriodDividers and isVisualTimeframe and barstate.isconfirmed and exactDividerBar and (inSession or sessionEnded)
         line.new(x1=time, y1=low, x2=time, y2=high, xloc=xloc.bar_time, extend=extend.both, color=color.new(color.black, 0), style=line.style_solid, width=1)
 
-    renderMtfVisuals(cfg, isHigherVisualTimeframe, isSubMinuteVisualTimeframe, drawStructureVisuals, drawStructureTags)
+    // Reconstruct the one-minute FPI drawings when the chart itself is 2-15 minutes.
+    // This is deliberately visual-only: TradingView strategies still place orders on
+    // the chart timeframe, so all economic execution remains restricted to the 1m chart.
+    if cfg.showOneMinuteDrawingsThrough15m and isHigherVisualTimeframe
+        [oneMinuteTimes, oneMinuteCloseTimes, oneMinuteOpens, oneMinuteHighs, oneMinuteLows, oneMinuteCloses] = request.security_lower_tf(syminfo.tickerid, "1", [time, time_close, open, high, low, close])
+        int intrabarCount = array.size(oneMinuteTimes)
+        if intrabarCount > 0
+            for intrabarIndex = 0 to intrabarCount - 1
+                int eventTime = array.get(oneMinuteTimes, intrabarIndex)
+                int eventCloseTime = array.get(oneMinuteCloseTimes, intrabarIndex)
+                bool eventMinuteConfirmed = barstate.ishistory or eventCloseTime <= timenow
+                if eventMinuteConfirmed and (na(mtfLastProcessedTime) or eventTime > mtfLastProcessedTime)
+                    float eventOpen = array.get(oneMinuteOpens, intrabarIndex)
+                    float eventHigh = array.get(oneMinuteHighs, intrabarIndex)
+                    float eventLow = array.get(oneMinuteLows, intrabarIndex)
+                    float eventClose = array.get(oneMinuteCloses, intrabarIndex)
+                    int eventMinute = minuteFromTimestamp(eventTime)
+
+                    if eventMinute == SESSION_OPEN_MINUTE
+                        for visualWindow = 0 to LAST_WINDOW_ID
+                            array.set(mtfSelectedByWindow, visualWindow, false)
+                        mtfMacro950Found := false
+                    if eventMinute == SESSION_OPEN_MINUTE or eventMinute == NY_AM_END_MINUTE or eventMinute == NY_PM_START_MINUTE
+                        mtfSessionAnchorDirection := 0
+                        array.fill(mtfOrderBlockState, na)
+
+                    if not na(mtfPrevious2Time) and not na(mtfPrevious1Time)
+                        bool visualBullFpi = mtfPrevious1Close > mtfPrevious1Open and mtfPrevious2High < eventLow
+                        bool visualBearFpi = mtfPrevious1Close < mtfPrevious1Open and mtfPrevious2Low > eventHigh
+                        int visualDirection = visualBullFpi ? 1 : visualBearFpi ? -1 : 0
+                        int visualMiddleMinute = minuteFromTimestamp(mtfPrevious1Time)
+                        int visualWindow = windowIdFromMinute(visualMiddleMinute)
+                        float visualTop = visualBullFpi ? eventLow : visualBearFpi ? mtfPrevious2Low : na
+                        float visualBottom = visualBullFpi ? mtfPrevious2High : visualBearFpi ? eventHigh : na
+                        bool visualMiddleInMacro950 = visualMiddleMinute >= MACRO_950_START_MINUTE and visualMiddleMinute < MACRO_950_END_MINUTE
+
+                        if visualDirection != 0 and visualMiddleInMacro950 and not mtfMacro950Found
+                            mtfMacro950Found := true
+                            if drawStructureVisuals
+                                box.new(left=mtfPrevious2Time, top=visualTop, right=minuteTimestampFrom(eventTime, MACRO_950_TRADE_END), bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? "9:50-10:10 FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+                        bool visualMiddleInExactPeriod = visualWindow >= 0 and visualMiddleMinute >= periodStartMinute(visualWindow) and visualMiddleMinute < periodEndMinute(visualWindow)
+                        bool visualFirstFpi = visualMiddleInExactPeriod and visualDirection != 0 and not array.get(mtfSelectedByWindow, visualWindow)
+                        if visualFirstFpi
+                            array.set(mtfSelectedByWindow, visualWindow, true)
+                            int visualPhase = sessionPhaseFromMinute(visualMiddleMinute)
+                            if mtfSessionAnchorDirection == 0 and visualWindow == controllerWindowForPhase(visualPhase)
+                                mtfSessionAnchorDirection := visualDirection
+                            if drawStructureVisuals
+                                int visualStartTime = minuteTimestampFrom(eventTime, periodStartMinute(visualWindow))
+                                int visualEndTime = minuteTimestampFrom(eventTime, periodEndMinute(visualWindow))
+                                int visualLeftTime = math.max(mtfPrevious2Time, visualStartTime)
+                                box.new(left=visualLeftTime, top=visualTop, right=visualEndTime, bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? periodLabel(visualWindow) + " FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+                    if eventMinute >= SESSION_OPEN_MINUTE and eventMinute < SESSION_END_MINUTE
+                        [visualObDirection, visualObTop, visualObBottom, visualObLeftTime] = visualOrderBlockStep(mtfOrderBlockState, eventTime, eventOpen, eventHigh, eventLow, eventClose, mtfSessionAnchorDirection)
+                        if visualObDirection != 0 and drawStructureVisuals
+                            box.new(left=visualObLeftTime, top=visualObTop, right=minuteTimestampFrom(eventTime, SESSION_END_MINUTE), bottom=visualObBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualObDirection), border_width=2, bgcolor=fpiFillColor(visualObDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? (visualObDirection == 1 ? "BULLISH OB" : "BEARISH OB") : "", text_size=size.large, text_color=fpiBorderColor(visualObDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+                    mtfPrevious2Time := mtfPrevious1Time
+                    mtfPrevious2High := mtfPrevious1High
+                    mtfPrevious2Low := mtfPrevious1Low
+                    mtfPrevious1Time := eventTime
+                    mtfPrevious1Open := eventOpen
+                    mtfPrevious1High := eventHigh
+                    mtfPrevious1Low := eventLow
+                    mtfPrevious1Close := eventClose
+                    mtfLastProcessedTime := eventTime
+
+    // Seconds charts request the same one-minute source as a higher timeframe. The
+    // confirmed minute is processed once, producing geometry identical to the 1m chart.
+    if cfg.showOneMinuteDrawingsThrough15m and isSubMinuteVisualTimeframe
+        [oneMinuteTime, oneMinuteCloseTime, oneMinuteOpen, oneMinuteHigh, oneMinuteLow, oneMinuteClose] = request.security(syminfo.tickerid, "1", [time, time_close, open, high, low, close], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+        bool oneMinuteConfirmed = barstate.ishistory or oneMinuteCloseTime <= timenow
+        if oneMinuteConfirmed and not na(oneMinuteTime) and (na(mtfLastProcessedTime) or oneMinuteTime > mtfLastProcessedTime)
+            int eventMinute = minuteFromTimestamp(oneMinuteTime)
+            if eventMinute == SESSION_OPEN_MINUTE
+                for visualWindow = 0 to LAST_WINDOW_ID
+                    array.set(mtfSelectedByWindow, visualWindow, false)
+                mtfMacro950Found := false
+            if eventMinute == SESSION_OPEN_MINUTE or eventMinute == NY_AM_END_MINUTE or eventMinute == NY_PM_START_MINUTE
+                mtfSessionAnchorDirection := 0
+                array.fill(mtfOrderBlockState, na)
+
+            if not na(mtfPrevious2Time) and not na(mtfPrevious1Time)
+                bool visualBullFpi = mtfPrevious1Close > mtfPrevious1Open and mtfPrevious2High < oneMinuteLow
+                bool visualBearFpi = mtfPrevious1Close < mtfPrevious1Open and mtfPrevious2Low > oneMinuteHigh
+                int visualDirection = visualBullFpi ? 1 : visualBearFpi ? -1 : 0
+                int visualMiddleMinute = minuteFromTimestamp(mtfPrevious1Time)
+                int visualWindow = windowIdFromMinute(visualMiddleMinute)
+                float visualTop = visualBullFpi ? oneMinuteLow : visualBearFpi ? mtfPrevious2Low : na
+                float visualBottom = visualBullFpi ? mtfPrevious2High : visualBearFpi ? oneMinuteHigh : na
+                bool visualMiddleInMacro950 = visualMiddleMinute >= MACRO_950_START_MINUTE and visualMiddleMinute < MACRO_950_END_MINUTE
+
+                if visualDirection != 0 and visualMiddleInMacro950 and not mtfMacro950Found
+                    mtfMacro950Found := true
+                    if drawStructureVisuals
+                        box.new(left=mtfPrevious2Time, top=visualTop, right=minuteTimestampFrom(oneMinuteTime, MACRO_950_TRADE_END), bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? "9:50-10:10 FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+                bool visualMiddleInExactPeriod = visualWindow >= 0 and visualMiddleMinute >= periodStartMinute(visualWindow) and visualMiddleMinute < periodEndMinute(visualWindow)
+                bool visualFirstFpi = visualMiddleInExactPeriod and visualDirection != 0 and not array.get(mtfSelectedByWindow, visualWindow)
+                if visualFirstFpi
+                    array.set(mtfSelectedByWindow, visualWindow, true)
+                    int visualPhase = sessionPhaseFromMinute(visualMiddleMinute)
+                    if mtfSessionAnchorDirection == 0 and visualWindow == controllerWindowForPhase(visualPhase)
+                        mtfSessionAnchorDirection := visualDirection
+                    if drawStructureVisuals
+                        int visualStartTime = minuteTimestampFrom(oneMinuteTime, periodStartMinute(visualWindow))
+                        int visualEndTime = minuteTimestampFrom(oneMinuteTime, periodEndMinute(visualWindow))
+                        int visualLeftTime = math.max(mtfPrevious2Time, visualStartTime)
+                        box.new(left=visualLeftTime, top=visualTop, right=visualEndTime, bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? periodLabel(visualWindow) + " FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+            if eventMinute >= SESSION_OPEN_MINUTE and eventMinute < SESSION_END_MINUTE
+                [visualObDirection, visualObTop, visualObBottom, visualObLeftTime] = visualOrderBlockStep(mtfOrderBlockState, oneMinuteTime, oneMinuteOpen, oneMinuteHigh, oneMinuteLow, oneMinuteClose, mtfSessionAnchorDirection)
+                if visualObDirection != 0 and drawStructureVisuals
+                    box.new(left=visualObLeftTime, top=visualObTop, right=minuteTimestampFrom(oneMinuteTime, SESSION_END_MINUTE), bottom=visualObBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualObDirection), border_width=2, bgcolor=fpiFillColor(visualObDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? (visualObDirection == 1 ? "BULLISH OB" : "BEARISH OB") : "", text_size=size.large, text_color=fpiBorderColor(visualObDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+            mtfPrevious2Time := mtfPrevious1Time
+            mtfPrevious2High := mtfPrevious1High
+            mtfPrevious2Low := mtfPrevious1Low
+            mtfPrevious1Time := oneMinuteTime
+            mtfPrevious1Open := oneMinuteOpen
+            mtfPrevious1High := oneMinuteHigh
+            mtfPrevious1Low := oneMinuteLow
+            mtfPrevious1Close := oneMinuteClose
+            mtfLastProcessedTime := oneMinuteTime
 
     if sessionStart
         activeNyPhase := SESSION_PHASE_AM
@@ -2270,6 +2261,23 @@ export run(EnigmaConfig cfg) =>
             seriesObValidationTop := obDecision.bullValidationTop
             seriesObValidationBottom := obDecision.bullValidationBottom
             seriesObValidationEndBar := obDecision.bullValidationEndBar
+            bullishImbCandidateFound := false
+            bullishImbCandidateTop := na
+            bullishImbCandidateBottom := na
+            bullishImbFormationBar := na
+            bullishImbStartTime := na
+            bullishImbBreakConfirmed := false
+            bullishImbBreakBar := na
+            bullishImbCandidateUsed := false
+            bullPairBearImbFound := false
+            bullPairBearImbTop := na
+            bullPairBearImbBottom := na
+            bullPairBearImbFormationBar := na
+            bullPairBearImbStartTime := na
+            bullPairBearImbWindow := -1
+            bullPairBearImbReclaimConfirmed := false
+            bullPairBearImbReclaimBar := na
+            bullPairBearImbUsed := false
             if drawStructureVisuals
                 box.new(left=obDecision.bullValidationStartTime, top=seriesObValidationTop, right=minuteTimestamp(periodEndMinute(currentWindow)), bottom=seriesObValidationBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(1), border_width=2, bgcolor=fpiFillColor(1, cfg.fpiBoxTransparency), text=drawStructureTags ? "BULLISH SERIES OB VALIDATED" : "", text_size=size.large, text_color=fpiBorderColor(1), text_halign=text.align_center, text_valign=text.align_center)
         else if obDecision.bearValidation
@@ -2278,6 +2286,23 @@ export run(EnigmaConfig cfg) =>
             seriesObValidationTop := obDecision.bearValidationTop
             seriesObValidationBottom := obDecision.bearValidationBottom
             seriesObValidationEndBar := obDecision.bearValidationEndBar
+            bearishImbCandidateFound := false
+            bearishImbCandidateTop := na
+            bearishImbCandidateBottom := na
+            bearishImbFormationBar := na
+            bearishImbStartTime := na
+            bearishImbBreakConfirmed := false
+            bearishImbBreakBar := na
+            bearishImbCandidateUsed := false
+            bearPairBullImbFound := false
+            bearPairBullImbTop := na
+            bearPairBullImbBottom := na
+            bearPairBullImbFormationBar := na
+            bearPairBullImbStartTime := na
+            bearPairBullImbWindow := -1
+            bearPairBullImbReclaimConfirmed := false
+            bearPairBullImbReclaimBar := na
+            bearPairBullImbUsed := false
             if drawStructureVisuals
                 box.new(left=obDecision.bearValidationStartTime, top=seriesObValidationTop, right=minuteTimestamp(periodEndMinute(currentWindow)), bottom=seriesObValidationBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(-1), border_width=2, bgcolor=fpiFillColor(-1, cfg.fpiBoxTransparency), text=drawStructureTags ? "BEARISH SERIES OB VALIDATED" : "", text_size=size.large, text_color=fpiBorderColor(-1), text_halign=text.align_center, text_valign=text.align_center)
 
@@ -2375,31 +2400,34 @@ export run(EnigmaConfig cfg) =>
                         array.set(nestedBgobImbBreakConfirmedByWindow, currentWindow, false)
                         array.set(nestedBgobImbBreakBarByWindow, currentWindow, na)
             if intervalImbalanceDirection == 1
-                bool replaceBullishImbalance = not bullishImbCandidateFound or intervalImbalanceBottom < bullishImbCandidateBottom
+                bool bullishPostObImbalanceEligible = bullishObCandidateFound and bullishObBreakConfirmed and not na(bullishObBreakBar) and bar_index >= bullishObBreakBar
+                bool replaceBullishImbalance = bullishPostObImbalanceEligible and (not bullishImbCandidateFound or intervalImbalanceBottom < bullishImbCandidateBottom)
                 if replaceBullishImbalance
                     bullishImbCandidateFound := true
                     bullishImbCandidateTop := intervalImbalanceTop
                     bullishImbCandidateBottom := intervalImbalanceBottom
                     bullishImbFormationBar := bar_index
                     bullishImbStartTime := time[2]
-                    bullishImbBreakConfirmed := false
-                    bullishImbBreakBar := na
+                    bullishImbBreakConfirmed := close > intervalImbalanceTop
+                    bullishImbBreakBar := bullishImbBreakConfirmed ? bar_index : na
                     bullishImbCandidateUsed := false
             else
-                bool replaceBearishImbalance = not bearishImbCandidateFound or intervalImbalanceTop > bearishImbCandidateTop
+                bool bearishPostObImbalanceEligible = bearishObCandidateFound and bearishObBreakConfirmed and not na(bearishObBreakBar) and bar_index >= bearishObBreakBar
+                bool replaceBearishImbalance = bearishPostObImbalanceEligible and (not bearishImbCandidateFound or intervalImbalanceTop > bearishImbCandidateTop)
                 if replaceBearishImbalance
                     bearishImbCandidateFound := true
                     bearishImbCandidateTop := intervalImbalanceTop
                     bearishImbCandidateBottom := intervalImbalanceBottom
                     bearishImbFormationBar := bar_index
                     bearishImbStartTime := time[2]
-                    bearishImbBreakConfirmed := false
-                    bearishImbBreakBar := na
+                    bearishImbBreakConfirmed := close < intervalImbalanceBottom
+                    bearishImbBreakBar := bearishImbBreakConfirmed ? bar_index : na
                     bearishImbCandidateUsed := false
 
             if cfg.allowOpposingImbFoundationPair
                 if intervalImbalanceDirection == -1
-                    bool replaceLowerBearImb = not bullPairBearImbFound or na(bullPairBearImbBottom) or intervalImbalanceBottom < bullPairBearImbBottom
+                    bool bullishPostObInverseImbEligible = bullishObCandidateFound and bullishObBreakConfirmed and not na(bullishObBreakBar) and bar_index >= bullishObBreakBar
+                    bool replaceLowerBearImb = bullishPostObInverseImbEligible and (not bullPairBearImbFound or na(bullPairBearImbBottom) or intervalImbalanceBottom < bullPairBearImbBottom)
                     if replaceLowerBearImb
                         bullPairBearImbFound := true
                         bullPairBearImbTop := intervalImbalanceTop
@@ -2411,7 +2439,8 @@ export run(EnigmaConfig cfg) =>
                         bullPairBearImbReclaimBar := na
                         bullPairBearImbUsed := false
                 else if intervalImbalanceDirection == 1
-                    bool replaceHigherBullImb = not bearPairBullImbFound or na(bearPairBullImbTop) or intervalImbalanceTop > bearPairBullImbTop
+                    bool bearishPostObInverseImbEligible = bearishObCandidateFound and bearishObBreakConfirmed and not na(bearishObBreakBar) and bar_index >= bearishObBreakBar
+                    bool replaceHigherBullImb = bearishPostObInverseImbEligible and (not bearPairBullImbFound or na(bearPairBullImbTop) or intervalImbalanceTop > bearPairBullImbTop)
                     if replaceHigherBullImb
                         bearPairBullImbFound := true
                         bearPairBullImbTop := intervalImbalanceTop
@@ -2761,6 +2790,8 @@ export run(EnigmaConfig cfg) =>
     bool bearishMacro950ComponentPulseNow = macro950SignalNow and macro950SignalDirection == -1
     bool bullAlignedJudasImbReclaimNow = false
     bool bearAlignedJudasImbReclaimNow = false
+    bool bullControllerAlignedImbReclaimNow = false
+    bool bearControllerAlignedImbReclaimNow = false
 
     // Persistent stage-aware sequence builder. The phase-extreme OB and IMB do not
     // both need to complete an additional retest. Once both components have accepted
@@ -2769,8 +2800,10 @@ export run(EnigmaConfig cfg) =>
     //   IMB retest first -> later OB retest is the signal.
     //   OB retest first  -> later IMB retest is the signal.
     if cfg.enableSequenceEngine and isOneMinute and inSession and barstate.isconfirmed
-        bool bullishSequenceContextActive = latestBullAgainstFpiWindow >= 0 or bullishMacro950FoundationExpectation
-        bool bearishSequenceContextActive = latestBearAgainstFpiWindow >= 0 or bearishMacro950FoundationExpectation
+        bool bullishControllerFoundationContext = sessionAnchorFpiFound and sessionAnchorDirection == 1
+        bool bearishControllerFoundationContext = sessionAnchorFpiFound and sessionAnchorDirection == -1
+        bool bullishSequenceContextActive = latestBullAgainstFpiWindow >= 0 or bullishMacro950FoundationExpectation or bullishControllerFoundationContext
+        bool bearishSequenceContextActive = latestBearAgainstFpiWindow >= 0 or bearishMacro950FoundationExpectation or bearishControllerFoundationContext
 
         bool bullObArmed = bullishObCandidateFound and bullishObBreakConfirmed and not na(bullishObCandidateTop) and not na(bullishObCandidateBottom)
         bool bullOpposingImbArmed = cfg.allowOpposingImbFoundationPair and bullPairBearImbFound and bullPairBearImbReclaimConfirmed and not na(bullPairBearImbTop) and not na(bullPairBearImbBottom)
@@ -2779,7 +2812,8 @@ export run(EnigmaConfig cfg) =>
         bool bullImbArmed = bullOpposingImbArmed or bullAlignedImbArmed or bullMacroImbArmed
         bool bullObRetestNow = bullishObComponentNow
         bullAlignedJudasImbReclaimNow := bullOpposingImbReclaimPulseNow and bullObArmed and activeNyPhase == SESSION_PHASE_AM and sessionAnchorFpiFound and sessionAnchorDirection == 1 and macro950Found and macro950Direction == 1 and latestBullAgainstFpiWindow >= 0
-        bool bullImbRetestNow = bullishImbComponentNow or bullishMacro950ComponentPulseNow or bullAlignedJudasImbReclaimNow
+        bullControllerAlignedImbReclaimNow := bullOpposingImbReclaimPulseNow and bullObArmed and sessionAnchorFpiFound and sessionAnchorDirection == 1
+        bool bullImbRetestNow = bullishImbComponentNow or bullishMacro950ComponentPulseNow or bullAlignedJudasImbReclaimNow or bullControllerAlignedImbReclaimNow
         bool bullPairRetestTriggerNow = bullishSequenceContextActive and ((bullObRetestNow and bullImbArmed) or (bullImbRetestNow and bullObArmed))
 
         if bullishSequenceContextActive and (bullObArmed or bullImbArmed or bullObRetestNow or bullImbRetestNow)
@@ -2837,7 +2871,8 @@ export run(EnigmaConfig cfg) =>
         bool bearImbArmed = bearOpposingImbArmed or bearAlignedImbArmed or bearMacroImbArmed
         bool bearObRetestNow = bearishObComponentNow
         bearAlignedJudasImbReclaimNow := bearOpposingImbReclaimPulseNow and bearObArmed and activeNyPhase == SESSION_PHASE_AM and sessionAnchorFpiFound and sessionAnchorDirection == -1 and macro950Found and macro950Direction == -1 and latestBearAgainstFpiWindow >= 0
-        bool bearImbRetestNow = bearishImbComponentNow or bearishMacro950ComponentPulseNow or bearAlignedJudasImbReclaimNow
+        bearControllerAlignedImbReclaimNow := bearOpposingImbReclaimPulseNow and bearObArmed and sessionAnchorFpiFound and sessionAnchorDirection == -1
+        bool bearImbRetestNow = bearishImbComponentNow or bearishMacro950ComponentPulseNow or bearAlignedJudasImbReclaimNow or bearControllerAlignedImbReclaimNow
         bool bearPairRetestTriggerNow = bearishSequenceContextActive and ((bearObRetestNow and bearImbArmed) or (bearImbRetestNow and bearObArmed))
 
         if bearishSequenceContextActive and (bearObArmed or bearImbArmed or bearObRetestNow or bearImbRetestNow)
@@ -2947,7 +2982,7 @@ export run(EnigmaConfig cfg) =>
         bool bullCounterControllerSetup = sessionAnchorFpiFound and sessionAnchorDirection == -1
         bool bullComponentsStillRespected = not na(bullRevFoundationObBottom) and not na(bullRevFoundationImbBottom) and close >= bullRevFoundationObBottom and close >= bullRevFoundationImbBottom
         bool bullFreshFoundationConfirmation = not na(bullRevFoundationConfirmBar) and bar_index == bullRevFoundationConfirmBar
-        bool bullInverseImbRetestConfirmation = bullFreshFoundationConfirmation and (bullOpposingImbSignalNow or bullAlignedJudasImbReclaimNow) and bullRevFoundationHasOb and close > bullRevFoundationImbTop
+        bool bullInverseImbRetestConfirmation = bullFreshFoundationConfirmation and (bullOpposingImbSignalNow or bullAlignedJudasImbReclaimNow or bullControllerAlignedImbReclaimNow) and bullRevFoundationHasOb and close > bullRevFoundationImbTop
         bool bullAlignedImbRetestConfirmation = bullFreshFoundationConfirmation and bullishAlignedImbComponentNow and bullRevFoundationHasOb and close > bullRevFoundationImbTop
         bool bullObRetestConfirmation = bullFreshFoundationConfirmation and orderBlockSignalNow and orderBlockSignalDirection == 1 and bullRevFoundationHasImb
         // Inverse-IMB confirmation is structural. The retest candle may close red;
@@ -2983,7 +3018,8 @@ export run(EnigmaConfig cfg) =>
         // A stored foundation cannot wait several candles for a later permission event.
         // The structural confirmation candle is the entry; later Macro reclaim upgrades
         // an existing position into campaign hold instead of creating a delayed entry.
-        bool bullSequenceReadyNow = bullFoundationDecision.enterNow and (not cfg.requireFreshFoundationSignal or bullFreshFoundationConfirmation)
+        bool bullControllerAlignedPostObImbEntry = cfg.allowControllerAlignedFoundationEntry and bullControllerAligned and not bullMacroOriginAligned and bullFreshFoundationConfirmation and (bullInverseImbRetestConfirmation or bullAlignedImbRetestConfirmation) and bullComponentsStillRespected and bullFoundationNotChased
+        bool bullSequenceReadyNow = (bullFoundationDecision.enterNow or bullControllerAlignedPostObImbEntry) and (not cfg.requireFreshFoundationSignal or bullFreshFoundationConfirmation)
 
         bool bearAgainstFpiValid = bearRevFoundationAgainstFpiWindow >= 0 and array.get(selectedByWindow, bearRevFoundationAgainstFpiWindow) and array.get(intervalFpiOriginalDirection, bearRevFoundationAgainstFpiWindow) == 1
         float bearAgainstFpiBottom = bearAgainstFpiValid ? array.get(intervalFpiBottom, bearRevFoundationAgainstFpiWindow) : na
@@ -2997,7 +3033,7 @@ export run(EnigmaConfig cfg) =>
         bool bearCounterControllerSetup = sessionAnchorFpiFound and sessionAnchorDirection == 1
         bool bearComponentsStillRespected = not na(bearRevFoundationObTop) and not na(bearRevFoundationImbTop) and close <= bearRevFoundationObTop and close <= bearRevFoundationImbTop
         bool bearFreshFoundationConfirmation = not na(bearRevFoundationConfirmBar) and bar_index == bearRevFoundationConfirmBar
-        bool bearInverseImbRetestConfirmation = bearFreshFoundationConfirmation and (bearOpposingImbSignalNow or bearAlignedJudasImbReclaimNow) and bearRevFoundationHasOb and close < bearRevFoundationImbBottom
+        bool bearInverseImbRetestConfirmation = bearFreshFoundationConfirmation and (bearOpposingImbSignalNow or bearAlignedJudasImbReclaimNow or bearControllerAlignedImbReclaimNow) and bearRevFoundationHasOb and close < bearRevFoundationImbBottom
         bool bearAlignedImbRetestConfirmation = bearFreshFoundationConfirmation and bearishAlignedImbComponentNow and bearRevFoundationHasOb and close < bearRevFoundationImbBottom
         bool bearObRetestConfirmation = bearFreshFoundationConfirmation and orderBlockSignalNow and orderBlockSignalDirection == -1 and bearRevFoundationHasImb
         bool bearDirectionalConfirmationClose = bearFreshFoundationConfirmation and (bearInverseImbRetestConfirmation or bearAlignedImbRetestConfirmation or (bearObRetestConfirmation and close < open))
@@ -3028,7 +3064,8 @@ export run(EnigmaConfig cfg) =>
             cfg.allowControllerAlignedFoundationEntry,
             bearQualifiedEarlyPermission
         )
-        bool bearSequenceReadyNow = bearFoundationDecision.enterNow and (not cfg.requireFreshFoundationSignal or bearFreshFoundationConfirmation)
+        bool bearControllerAlignedPostObImbEntry = cfg.allowControllerAlignedFoundationEntry and bearControllerAligned and not bearMacroOriginAligned and bearFreshFoundationConfirmation and (bearInverseImbRetestConfirmation or bearAlignedImbRetestConfirmation) and bearComponentsStillRespected and bearFoundationNotChased
+        bool bearSequenceReadyNow = (bearFoundationDecision.enterNow or bearControllerAlignedPostObImbEntry) and (not cfg.requireFreshFoundationSignal or bearFreshFoundationConfirmation)
 
         if bullSequenceReadyNow
             reversalFoundationSignalNow := true
@@ -3037,7 +3074,7 @@ export run(EnigmaConfig cfg) =>
             reversalFoundationSignalBottom := bullRevFoundationBottom
             reversalFoundationSignalWindow := bullRevFoundationWindow
             reversalFoundationSignalAgainstFpiWindow := bullRevFoundationAgainstFpiWindow
-            reversalFoundationEarlyEntryNow := bullFoundationDecision.earlyReversal
+            reversalFoundationEarlyEntryNow := bullFoundationDecision.earlyReversal or bullControllerAlignedPostObImbEntry
             reversalFoundationNarrativeConfirmedNow := bullFoundationDecision.narrativeConfirmed
         else if bearSequenceReadyNow
             reversalFoundationSignalNow := true
@@ -3046,7 +3083,7 @@ export run(EnigmaConfig cfg) =>
             reversalFoundationSignalBottom := bearRevFoundationBottom
             reversalFoundationSignalWindow := bearRevFoundationWindow
             reversalFoundationSignalAgainstFpiWindow := bearRevFoundationAgainstFpiWindow
-            reversalFoundationEarlyEntryNow := bearFoundationDecision.earlyReversal
+            reversalFoundationEarlyEntryNow := bearFoundationDecision.earlyReversal or bearControllerAlignedPostObImbEntry
             reversalFoundationNarrativeConfirmedNow := bearFoundationDecision.narrativeConfirmed
 
         if cfg.showSequenceStateLabels and reversalFoundationSignalNow
@@ -3532,32 +3569,23 @@ export run(EnigmaConfig cfg) =>
                 priorRespectedFpiReversalSignalNow := true
                 priorRespectedFpiReversalDirection := desiredReversalDirection
 
-    foundation.FoundationSignal externalFoundationSignal = foundation.step(
-        cfg.enableBot and cfg.enableSequenceEngine and isOneMinute,
-        inSession,
-        sessionStart,
-        sessionAnchorFpiFound ? sessionAnchorDirection : 0
-    )
-    bool externalFoundationSignalNow = externalFoundationSignal.enterNow
-
     // Resolve the one effective structural signal for this bar.
-    bool rawEffectiveSignalNow = externalFoundationSignalNow or priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or intervalFoundationSignalNow
-    bool effectiveCameFromIntervalFoundation = not externalFoundationSignalNow and not priorRespectedFpiReversalSignalNow and not macro950BgobSignalNow and not reversalFoundationSignalNow and intervalFoundationSignalNow
+    bool rawEffectiveSignalNow = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or intervalFoundationSignalNow
+    bool effectiveCameFromIntervalFoundation = not priorRespectedFpiReversalSignalNow and not macro950BgobSignalNow and not reversalFoundationSignalNow and intervalFoundationSignalNow
     bool signalCameFromFailure = false
-    int effectiveDirection = externalFoundationSignalNow ? externalFoundationSignal.direction : priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalDirection : macro950BgobSignalNow ? macro950BgobSignalDirection : reversalFoundationSignalNow ? reversalFoundationSignalDirection : intervalFoundationSignalNow ? intervalFoundationSignalDirection : sessionAnchorDirection
-    float effectiveTop = externalFoundationSignalNow ? externalFoundationSignal.zoneTop : priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalTop : macro950BgobSignalNow ? macro950BgobSignalTop : reversalFoundationSignalNow ? reversalFoundationSignalTop : intervalFoundationSignalNow ? intervalFoundationSignalTop : sessionConfluenceMasterTop
-    float effectiveBottom = externalFoundationSignalNow ? externalFoundationSignal.zoneBottom : priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalBottom : macro950BgobSignalNow ? macro950BgobSignalBottom : reversalFoundationSignalNow ? reversalFoundationSignalBottom : intervalFoundationSignalNow ? intervalFoundationSignalBottom : sessionConfluenceMasterBottom
+    int effectiveDirection = priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalDirection : macro950BgobSignalNow ? macro950BgobSignalDirection : reversalFoundationSignalNow ? reversalFoundationSignalDirection : intervalFoundationSignalNow ? intervalFoundationSignalDirection : sessionAnchorDirection
+    float effectiveTop = priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalTop : macro950BgobSignalNow ? macro950BgobSignalTop : reversalFoundationSignalNow ? reversalFoundationSignalTop : intervalFoundationSignalNow ? intervalFoundationSignalTop : sessionConfluenceMasterTop
+    float effectiveBottom = priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalBottom : macro950BgobSignalNow ? macro950BgobSignalBottom : reversalFoundationSignalNow ? reversalFoundationSignalBottom : intervalFoundationSignalNow ? intervalFoundationSignalBottom : sessionConfluenceMasterBottom
     int stopFpiWindow = priorRespectedFpiReversalSignalNow ? priorRespectedFpiReversalWindow : reversalFoundationSignalNow ? reversalFoundationSignalAgainstFpiWindow : currentWindow >= 0 and array.get(selectedByWindow, currentWindow) ? currentWindow : sessionAnchorWindow
     float intervalThreeCandleHigh = stopFpiWindow >= 0 ? array.get(intervalFpiThreeCandleHigh, stopFpiWindow) : na
     float intervalThreeCandleLow = stopFpiWindow >= 0 ? array.get(intervalFpiThreeCandleLow, stopFpiWindow) : na
     float macroBgobMidpointStop = macro950BgobSignalNow ? (macro950BgobSignalTop + macro950BgobSignalBottom) / 2.0 : na
-    float effectiveSl = externalFoundationSignalNow ? externalFoundationSignal.stopPrice : macro950BgobSignalNow ? macroBgobMidpointStop : reversalFoundationSignalNow ? (effectiveDirection == 1 ? effectiveBottom : effectiveTop) : effectiveDirection == 1 ? intervalThreeCandleLow : intervalThreeCandleHigh
-    int effectiveWindow = externalFoundationSignalNow ? currentWindow : priorRespectedFpiReversalSignalNow ? currentWindow : reversalFoundationSignalNow ? reversalFoundationSignalWindow : currentWindow
-    int effectiveSourceKind = externalFoundationSignalNow ? (externalFoundationSignal.sourceKind == 1 ? SOURCE_ORDER_BLOCK : SOURCE_REVERSAL_FOUNDATION) : priorRespectedFpiReversalSignalNow ? SOURCE_PRIOR_FPI_RETEST : macro950BgobSignalNow ? SOURCE_BGOB : reversalFoundationSignalNow ? SOURCE_REVERSAL_FOUNDATION : intervalFoundationSignalNow ? intervalFoundationSignalKind : sessionConfluenceMasterKind
-    bool effectiveInitialRetest = externalFoundationSignalNow or priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or not reversalFoundationSignalNow
+    float effectiveSl = macro950BgobSignalNow ? macroBgobMidpointStop : reversalFoundationSignalNow ? (effectiveDirection == 1 ? effectiveBottom : effectiveTop) : effectiveDirection == 1 ? intervalThreeCandleLow : intervalThreeCandleHigh
+    int effectiveWindow = priorRespectedFpiReversalSignalNow ? currentWindow : reversalFoundationSignalNow ? reversalFoundationSignalWindow : currentWindow
+    int effectiveSourceKind = priorRespectedFpiReversalSignalNow ? SOURCE_PRIOR_FPI_RETEST : macro950BgobSignalNow ? SOURCE_BGOB : reversalFoundationSignalNow ? SOURCE_REVERSAL_FOUNDATION : intervalFoundationSignalNow ? intervalFoundationSignalKind : sessionConfluenceMasterKind
+    bool effectiveInitialRetest = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or not reversalFoundationSignalNow
     box effectiveStructureBox = na
     bool effectiveCounterToController = sessionAnchorFpiFound and effectiveDirection != sessionAnchorDirection
-    bool externalFoundationAuthority = externalFoundationSignalNow and sessionAnchorFpiFound and effectiveDirection == sessionAnchorDirection
     bool sequenceAlignedWithController = reversalFoundationSignalNow and sessionAnchorFpiFound and effectiveDirection == sessionAnchorDirection
     bool sequenceAlignedWithMacroOrigin = activeNyPhase != SESSION_PHASE_AM or not macro950Found or effectiveDirection == macro950Direction
     bool sequenceAlignedEarlyPermission = cfg.allowControllerAlignedFoundationEntry and sequenceAlignedWithController and sequenceAlignedWithMacroOrigin
@@ -3572,29 +3600,28 @@ export run(EnigmaConfig cfg) =>
     int catalogStructure = rawEffectiveSignalNow ? effectiveDirection : catalog.STRUCT_NONE
     catalog.CatalogDecision catalogDecision = catalog.resolveFromPrices(sessionAnchorDirection, macro950Direction, catalogSessionRespected, close, sessionAnchorBottom, sessionAnchorTop, macro950Bottom, macro950Top, catalogSweepEvent, catalogStructure)
     bool catalogAvailable = cfg.enableCatalogAudit and activeNyPhase == SESSION_PHASE_AM and catalogRange.locked and sessionAnchorFpiFound and macro950Found
-    bool catalogDirectionAllowed = externalFoundationAuthority or not cfg.enforceCatalogGate or not catalogAvailable or (effectiveDirection == 1 ? catalogDecision.terminalAction == catalog.ACTION_BUY_ELIGIBLE : effectiveDirection == -1 ? catalogDecision.terminalAction == catalog.ACTION_SELL_ELIGIBLE : true)
+    bool catalogDirectionAllowed = not cfg.enforceCatalogGate or not catalogAvailable or (effectiveDirection == 1 ? catalogDecision.terminalAction == catalog.ACTION_BUY_ELIGIBLE : effectiveDirection == -1 ? catalogDecision.terminalAction == catalog.ACTION_SELL_ELIGIBLE : true)
     string catalogSummary = catalogAvailable ? "CATALOG " + catalog.actionText(catalogDecision.terminalAction) + " | " + catalog.stateText(catalogDecision.resolvedState) + " | " + catalog.sweepText(catalogSweepEvent) + " | " + catalog.structureText(catalogStructure) : "CATALOG N/A"
 
-    bool effectiveDirectionAllowedByMacro950 = externalFoundationAuthority ? true : priorRespectedFpiReversalSignalNow ? true : macro950BgobSignalNow ? true : earlyCounterControllerFoundationSignal ? true : macroExpectedFoundationSignal ? true : sequenceAlignedEarlyPermission ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : effectiveMacroDirectionMatches and effectiveMacroTransitionConfirmed
+    bool effectiveDirectionAllowedByMacro950 = priorRespectedFpiReversalSignalNow ? true : macro950BgobSignalNow ? true : earlyCounterControllerFoundationSignal ? true : macroExpectedFoundationSignal ? true : sequenceAlignedEarlyPermission ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : effectiveMacroDirectionMatches and effectiveMacroTransitionConfirmed
     bool counterSessionBeyondAnchor = sessionAnchorDirection == 1 and effectiveDirection == -1 ? close < sessionAnchorBottom : sessionAnchorDirection == -1 and effectiveDirection == 1 ? close > sessionAnchorTop : false
-    bool effectiveDirectionAllowedBySession = externalFoundationAuthority ? true : priorRespectedFpiReversalSignalNow ? true : macro950BgobSignalNow ? true : earlyCounterControllerFoundationSignal ? true : macroExpectedFoundationSignal ? true : sequenceAlignedEarlyPermission ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : not sessionAnchorFpiFound or effectiveDirection == sessionAnchorDirection or counterSessionBeyondAnchor
-    bool effectiveDirectionAllowedByConfluence = externalFoundationAuthority or priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or (reversalModeActive ? effectiveDirection == reversalModeDirection : intervalFoundationSignalNow or not sessionConfluenceBiasActive or effectiveDirection == sessionAnchorDirection)
+    bool effectiveDirectionAllowedBySession = priorRespectedFpiReversalSignalNow ? true : macro950BgobSignalNow ? true : earlyCounterControllerFoundationSignal ? true : macroExpectedFoundationSignal ? true : sequenceAlignedEarlyPermission ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : not sessionAnchorFpiFound or effectiveDirection == sessionAnchorDirection or counterSessionBeyondAnchor
+    bool effectiveDirectionAllowedByConfluence = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or (reversalModeActive ? effectiveDirection == reversalModeDirection : intervalFoundationSignalNow or not sessionConfluenceBiasActive or effectiveDirection == sessionAnchorDirection)
     // A fresh phase-extreme reversal foundation may replace an older ordinary campaign
     // anchor. It still cannot override a fully confirmed narrative hold without that
     // narrative first losing its governing authority.
     bool qualifiedEarlyFoundationAuthority = earlyCounterControllerFoundationSignal and reversalFoundationSignalNow
-    bool campaignSignalCompatible = externalFoundationAuthority or priorRespectedFpiReversalSignalNow or qualifiedEarlyFoundationAuthority or not campaignHoldActive or effectiveDirection == recordedTradeDirection
-    bool intervalAuthoritySignalCompatible = externalFoundationAuthority or priorRespectedFpiReversalSignalNow or qualifiedEarlyFoundationAuthority or not priorIntervalHoldActive or effectiveDirection == recordedTradeDirection
+    bool campaignSignalCompatible = priorRespectedFpiReversalSignalNow or qualifiedEarlyFoundationAuthority or not campaignHoldActive or effectiveDirection == recordedTradeDirection
+    bool intervalAuthoritySignalCompatible = priorRespectedFpiReversalSignalNow or qualifiedEarlyFoundationAuthority or not priorIntervalHoldActive or effectiveDirection == recordedTradeDirection
     bool confirmedNarrativeSignalCompatible = not recordedNarrativeHoldConfirmed or not recordedTradeOpen or effectiveDirection == recordedTradeDirection
-    bool campaignReentryDirectionCompatible = externalFoundationAuthority ? true : priorRespectedFpiReversalSignalNow ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : not campaignReentryAlignedOnly or effectiveDirection == sessionAnchorDirection
-    bool reversalModeWindowSupports = externalFoundationAuthority or priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or not reversalModeActive or (currentWindow >= 0 and array.get(selectedByWindow, currentWindow) and array.get(intervalFpiOriginalDirection, currentWindow) == reversalModeDirection)
+    bool campaignReentryDirectionCompatible = priorRespectedFpiReversalSignalNow ? true : reversalModeActive ? effectiveDirection == reversalModeDirection : not campaignReentryAlignedOnly or effectiveDirection == sessionAnchorDirection
+    bool reversalModeWindowSupports = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or not reversalModeActive or (currentWindow >= 0 and array.get(selectedByWindow, currentWindow) and array.get(intervalFpiOriginalDirection, currentWindow) == reversalModeDirection)
     // The management lock is directional. A failed short may block another short,
     // but it must not suppress a fully confirmed bullish Macro-FPI + OB reversal.
     bool enigmaBlocksEffectiveDirection = cfg.enableEnigmaManagement and enigmaDecision.entriesBlocked and enigmaState.blockedDirection == effectiveDirection
     bool authoritativeMacroStructureSignal = macro950BgobSignalNow or macroExpectedFoundationSignal
     bool ordinaryWaitLocksClear = not failedRecoveryWait and not campaignReentryWait and not intervalReentryWait
     bool standardSignalLocksClear = (authoritativeMacroStructureSignal or qualifiedEarlyFoundationAuthority or ordinaryWaitLocksClear) and not mandatoryStructureExitNow and not targetWindowLock and not openingFpiWindowLock and not enigmaBlocksEffectiveDirection
-    bool externalFoundationLocksClear = not mandatoryStructureExitNow and not targetWindowLock and not enigmaBlocksEffectiveDirection
 
     // Premium/discount gate from the active NY-phase dealing range.
     // The structure/retest zone determines location, not a later chased close.
@@ -3602,10 +3629,10 @@ export run(EnigmaConfig cfg) =>
     float activeDealingRangeLow = sessionExtremeLow
     float activeDealingRangeEquilibrium = not na(activeDealingRangeHigh) and not na(activeDealingRangeLow) ? (activeDealingRangeHigh + activeDealingRangeLow) / 2.0 : na
     float effectiveLocationReference = not na(effectiveTop) and not na(effectiveBottom) ? (effectiveTop + effectiveBottom) / 2.0 : close
-    bool effectiveDirectionAllowedByLocation = externalFoundationAuthority or not cfg.enforcePremiumDiscountEntries or na(activeDealingRangeEquilibrium) or (effectiveDirection == 1 ? effectiveLocationReference <= activeDealingRangeEquilibrium : effectiveLocationReference >= activeDealingRangeEquilibrium)
+    bool effectiveDirectionAllowedByLocation = not cfg.enforcePremiumDiscountEntries or na(activeDealingRangeEquilibrium) or (effectiveDirection == 1 ? effectiveLocationReference <= activeDealingRangeEquilibrium : effectiveLocationReference >= activeDealingRangeEquilibrium)
     bool oppositeEffectiveSignalBodyConfirmed = not recordedTradeOpen or strategy.position_size == 0 or effectiveDirection == recordedTradeDirection or not cfg.requireDirectionalBodyForFpiFailure or directionalBodyFor(effectiveDirection)
 
-    bool effectiveSignalNow = rawEffectiveSignalNow and (externalFoundationAuthority ? externalFoundationLocksClear : (priorRespectedFpiReversalSignalNow or standardSignalLocksClear)) and reversalModeWindowSupports and campaignSignalCompatible and intervalAuthoritySignalCompatible and confirmedNarrativeSignalCompatible and campaignReentryDirectionCompatible and effectiveDirectionAllowedByMacro950 and effectiveDirectionAllowedBySession and effectiveDirectionAllowedByConfluence and effectiveDirectionAllowedByLocation and oppositeEffectiveSignalBodyConfirmed and catalogDirectionAllowed
+    bool effectiveSignalNow = rawEffectiveSignalNow and (priorRespectedFpiReversalSignalNow or standardSignalLocksClear) and reversalModeWindowSupports and campaignSignalCompatible and intervalAuthoritySignalCompatible and confirmedNarrativeSignalCompatible and campaignReentryDirectionCompatible and effectiveDirectionAllowedByMacro950 and effectiveDirectionAllowedBySession and effectiveDirectionAllowedByConfluence and effectiveDirectionAllowedByLocation and oppositeEffectiveSignalBodyConfirmed and catalogDirectionAllowed
 
     bool positionChangedBySignal = false
     if effectiveSignalNow and cfg.enableBot and isOneMinute and entryTimeAllowed and barstate.isconfirmed
