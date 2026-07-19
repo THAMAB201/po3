@@ -3,8 +3,8 @@
 //@version=6
 strategy("PO3 MMXM Enigma", shorttitle="PO3 MMXM Enigma", overlay=true, max_labels_count=500, max_boxes_count=500, max_lines_count=500, initial_capital=100000, pyramiding=0, process_orders_on_close=true, calc_on_order_fills=false, fill_orders_on_standard_ohlc=true, default_qty_type=strategy.fixed, default_qty_value=5, margin_long=1, margin_short=1, commission_type=strategy.commission.cash_per_contract, commission_value=0)
 
-// Publish PO3MMXMEnigmaExecutionEngine privately as version 5 before loading this strategy.
-import SunovaBeach/PO3MMXMEnigmaExecutionEngine/5 as enigma
+// Publish PO3MMXMEnigmaExecutionEngine privately as version 6 before loading this strategy.
+import SunovaBeach/PO3MMXMEnigmaExecutionEngine/6 as enigma
 
 string G_ENGINE = "FPI Engine"
 bool enableBot = input.bool(true, "Enable Bot", group=G_ENGINE, display=display.none)
