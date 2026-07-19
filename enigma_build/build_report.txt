@@ -1,8 +1,9 @@
 PO3 MMXM Enigma stable build
-core_lines=3647
+core_lines=3645
 library_title=PO3MMXMEnigmaCore
 strict_fpi_acceptance_retest=true
 same_interval_structure_trigger=true
 breakout_only_entry=false
 consume_interval_only_on_order=true
 session_result_label=true
+pine_string_newlines=escaped

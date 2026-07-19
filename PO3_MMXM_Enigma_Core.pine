@@ -1339,8 +1339,7 @@ export run(EnigmaConfig cfg) =>
             if drawConfluenceStatus
                 confluenceStatusBox := box.new(left=sessionResultsLeft, top=confluenceBoxTop, right=sessionResultsRight, bottom=confluenceBoxBottom, xloc=xloc.bar_time, border_color=color.new(color.black, 0), border_width=2, bgcolor=color.new(#343a40, 12), text=confluenceSummary(sessionAnchorDirection, sessionFpiRegime, 0, na, confluenceBoundary, confluenceValid, reversalModeActive, reversalModeDirection, 0, 0), text_size=size.large, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center, text_font_family=font.family_monospace)
             if drawSessionResults
-                sessionResultLabel := label.new(x=bar_index, y=high, text="NY SESSION  |  LIVE
-NET  0.00 PTS  •  0 TRADES", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=color.new(#343a40, 5), textcolor=color.white, size=size.small, textalign=text.align_center)
+                sessionResultLabel := label.new(x=bar_index, y=high, text="NY SESSION  |  LIVE\nNET  0.00 PTS  •  0 TRADES", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=color.new(#343a40, 5), textcolor=color.white, size=size.small, textalign=text.align_center)
                 float dailyLogTop = (drawConfluenceStatus ? confluenceBoxBottom : confluenceBoxTop) - cfg.tradeTableGap
                 float dailyLogBottom = dailyLogTop - cfg.tradeTableHeight * 2.0
                 dailyTradeLogBox := box.new(left=sessionResultsLeft, top=dailyLogTop, right=sessionResultsRight, bottom=dailyLogBottom, xloc=xloc.bar_time, border_color=color.new(color.black, 0), border_width=2, bgcolor=color.new(#212529, 8), text=dailyTradeLogText(ledger), text_size=size.normal, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center, text_font_family=font.family_monospace)
@@ -3577,8 +3576,7 @@ NET  0.00 PTS  •  0 TRADES", xloc=xloc.bar_index, yloc=yloc.price, style=label
             float resultLabelY = displayedSessionHigh + visibleSessionRange * 0.045
             string resultStatus = sessionEnded ? "FINAL" : "LIVE"
             string tradeWord = displayedTradeCount == 1 ? "TRADE" : "TRADES"
-            string resultLabelText = "NY SESSION  |  " + resultStatus + "
-NET  " + signedPointsText(displayedSessionPoints) + "  •  " + str.tostring(displayedTradeCount) + " " + tradeWord
+            string resultLabelText = "NY SESSION  |  " + resultStatus + "\nNET  " + signedPointsText(displayedSessionPoints) + "  •  " + str.tostring(displayedTradeCount) + " " + tradeWord
             color resultLabelColor = displayedSessionPoints > 0 ? color.new(#1b4332, 5) : displayedSessionPoints < 0 ? color.new(#7f1d1d, 5) : color.new(#343a40, 5)
             label.set_x(sessionResultLabel, bar_index)
             label.set_y(sessionResultLabel, resultLabelY)
