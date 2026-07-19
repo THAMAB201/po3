@@ -1,0 +1,11 @@
+writeLedgerRow(
+    LedgerRefs ledger,
+    int window,
+    int slot,
+    int dir,
+    float entryPrice,
+    float slPrice,
+    float tpPrice,
+    float pointResult,
+    bool isOpen,
+    bool recordedTradeOpen,
