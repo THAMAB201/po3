@@ -52,6 +52,98 @@ replace_once(
     "bearish order-block source window",
 )
 
+# The first reclaim close of an opposing IMB can be the second component of a
+# controller-aligned Judas reversal foundation. It is never a standalone entry:
+# a validated aligned OB, aligned Session FPI, aligned original 9:50 Macro FPI,
+# and a live opposing 30-minute FPI are all required. The ordinary later retest
+# path remains available for every other sequence context.
+replace_once(
+    "    bool bullOpposingImbSignalNow = false\n"
+    "    float bullOpposingImbTop = na\n"
+    "    float bullOpposingImbBottom = na\n"
+    "    int bullOpposingImbWindow = -1\n"
+    "    bool bearOpposingImbSignalNow = false\n"
+    "    float bearOpposingImbTop = na\n"
+    "    float bearOpposingImbBottom = na\n"
+    "    int bearOpposingImbWindow = -1\n",
+    "    bool bullOpposingImbSignalNow = false\n"
+    "    bool bullOpposingImbReclaimPulseNow = false\n"
+    "    float bullOpposingImbTop = na\n"
+    "    float bullOpposingImbBottom = na\n"
+    "    int bullOpposingImbWindow = -1\n"
+    "    bool bearOpposingImbSignalNow = false\n"
+    "    bool bearOpposingImbReclaimPulseNow = false\n"
+    "    float bearOpposingImbTop = na\n"
+    "    float bearOpposingImbBottom = na\n"
+    "    int bearOpposingImbWindow = -1\n",
+    "opposing-IMB reclaim pulse declarations",
+)
+replace_once(
+    "                if close > bullPairBearImbTop\n"
+    "                    bullPairBearImbReclaimConfirmed := true\n"
+    "                    bullPairBearImbReclaimBar := bar_index\n",
+    "                if close > bullPairBearImbTop\n"
+    "                    bullPairBearImbReclaimConfirmed := true\n"
+    "                    bullPairBearImbReclaimBar := bar_index\n"
+    "                    bullOpposingImbReclaimPulseNow := true\n"
+    "                    bullOpposingImbTop := bullPairBearImbTop\n"
+    "                    bullOpposingImbBottom := bullPairBearImbBottom\n"
+    "                    bullOpposingImbWindow := bullPairBearImbWindow\n",
+    "bullish opposing-IMB reclaim pulse",
+)
+replace_once(
+    "                if close < bearPairBullImbBottom\n"
+    "                    bearPairBullImbReclaimConfirmed := true\n"
+    "                    bearPairBullImbReclaimBar := bar_index\n",
+    "                if close < bearPairBullImbBottom\n"
+    "                    bearPairBullImbReclaimConfirmed := true\n"
+    "                    bearPairBullImbReclaimBar := bar_index\n"
+    "                    bearOpposingImbReclaimPulseNow := true\n"
+    "                    bearOpposingImbTop := bearPairBullImbTop\n"
+    "                    bearOpposingImbBottom := bearPairBullImbBottom\n"
+    "                    bearOpposingImbWindow := bearPairBullImbWindow\n",
+    "bearish opposing-IMB reclaim pulse",
+)
+replace_once(
+    "    bool bullishMacro950ComponentPulseNow = macro950SignalNow and macro950SignalDirection == 1\n"
+    "    bool bearishMacro950ComponentPulseNow = macro950SignalNow and macro950SignalDirection == -1\n",
+    "    bool bullishMacro950ComponentPulseNow = macro950SignalNow and macro950SignalDirection == 1\n"
+    "    bool bearishMacro950ComponentPulseNow = macro950SignalNow and macro950SignalDirection == -1\n"
+    "    bool bullAlignedJudasImbReclaimNow = false\n"
+    "    bool bearAlignedJudasImbReclaimNow = false\n",
+    "aligned Judas reclaim state declarations",
+)
+replace_once(
+    "        bool bullObRetestNow = bullishObComponentNow\n"
+    "        bool bullImbRetestNow = bullishImbComponentNow or bullishMacro950ComponentPulseNow\n"
+    "        bool bullPairRetestTriggerNow = bullishSequenceContextActive and ((bullObRetestNow and bullImbArmed) or (bullImbRetestNow and bullObArmed))\n",
+    "        bool bullObRetestNow = bullishObComponentNow\n"
+    "        bullAlignedJudasImbReclaimNow := bullOpposingImbReclaimPulseNow and bullObArmed and activeNyPhase == SESSION_PHASE_AM and sessionAnchorFpiFound and sessionAnchorDirection == 1 and macro950Found and macro950Direction == 1 and latestBullAgainstFpiWindow >= 0\n"
+    "        bool bullImbRetestNow = bullishImbComponentNow or bullishMacro950ComponentPulseNow or bullAlignedJudasImbReclaimNow\n"
+    "        bool bullPairRetestTriggerNow = bullishSequenceContextActive and ((bullObRetestNow and bullImbArmed) or (bullImbRetestNow and bullObArmed))\n",
+    "bullish aligned Judas reclaim trigger",
+)
+replace_once(
+    "        bool bearObRetestNow = bearishObComponentNow\n"
+    "        bool bearImbRetestNow = bearishImbComponentNow or bearishMacro950ComponentPulseNow\n"
+    "        bool bearPairRetestTriggerNow = bearishSequenceContextActive and ((bearObRetestNow and bearImbArmed) or (bearImbRetestNow and bearObArmed))\n",
+    "        bool bearObRetestNow = bearishObComponentNow\n"
+    "        bearAlignedJudasImbReclaimNow := bearOpposingImbReclaimPulseNow and bearObArmed and activeNyPhase == SESSION_PHASE_AM and sessionAnchorFpiFound and sessionAnchorDirection == -1 and macro950Found and macro950Direction == -1 and latestBearAgainstFpiWindow >= 0\n"
+    "        bool bearImbRetestNow = bearishImbComponentNow or bearishMacro950ComponentPulseNow or bearAlignedJudasImbReclaimNow\n"
+    "        bool bearPairRetestTriggerNow = bearishSequenceContextActive and ((bearObRetestNow and bearImbArmed) or (bearImbRetestNow and bearObArmed))\n",
+    "bearish aligned Judas reclaim trigger",
+)
+replace_once(
+    "        bool bullInverseImbRetestConfirmation = bullFreshFoundationConfirmation and bullOpposingImbSignalNow and bullRevFoundationHasOb and close > bullRevFoundationImbTop\n",
+    "        bool bullInverseImbRetestConfirmation = bullFreshFoundationConfirmation and (bullOpposingImbSignalNow or bullAlignedJudasImbReclaimNow) and bullRevFoundationHasOb and close > bullRevFoundationImbTop\n",
+    "bullish reclaim confirmation entry",
+)
+replace_once(
+    "        bool bearInverseImbRetestConfirmation = bearFreshFoundationConfirmation and bearOpposingImbSignalNow and bearRevFoundationHasOb and close < bearRevFoundationImbBottom\n",
+    "        bool bearInverseImbRetestConfirmation = bearFreshFoundationConfirmation and (bearOpposingImbSignalNow or bearAlignedJudasImbReclaimNow) and bearRevFoundationHasOb and close < bearRevFoundationImbBottom\n",
+    "bearish reclaim confirmation entry",
+)
+
 replace_once(
     "    bool rawEffectiveSignalNow = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or intervalFoundationSignalNow or openingConfluenceReleaseSignalNow\n    bool signalCameFromFailure = false\n",
     "    bool rawEffectiveSignalNow = priorRespectedFpiReversalSignalNow or macro950BgobSignalNow or reversalFoundationSignalNow or intervalFoundationSignalNow\n"
@@ -162,6 +254,10 @@ required = (
     "currentIntervalObSignal",
     "currentIntervalBgobSignal",
     "effectiveCameFromIntervalFoundation",
+    "bullOpposingImbReclaimPulseNow",
+    "bearOpposingImbReclaimPulseNow",
+    "bullAlignedJudasImbReclaimNow",
+    "bearAlignedJudasImbReclaimNow",
     "sessionResultLabel",
     "NY SESSION  |  LIVE",
 )
