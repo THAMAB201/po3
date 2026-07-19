@@ -2455,10 +2455,12 @@ export run(EnigmaConfig cfg) =>
     // Opposing IMB reversal component. This is not a direct trade and is not BGOB.
     // It is one half of an OB + IMB sequence. The second completed component triggers.
     bool bullOpposingImbSignalNow = false
+    bool bullOpposingImbReclaimPulseNow = false
     float bullOpposingImbTop = na
     float bullOpposingImbBottom = na
     int bullOpposingImbWindow = -1
     bool bearOpposingImbSignalNow = false
+    bool bearOpposingImbReclaimPulseNow = false
     float bearOpposingImbTop = na
     float bearOpposingImbBottom = na
     int bearOpposingImbWindow = -1
@@ -2469,6 +2471,10 @@ export run(EnigmaConfig cfg) =>
                 if close > bullPairBearImbTop
                     bullPairBearImbReclaimConfirmed := true
                     bullPairBearImbReclaimBar := bar_index
+                    bullOpposingImbReclaimPulseNow := true
+                    bullOpposingImbTop := bullPairBearImbTop
+                    bullOpposingImbBottom := bullPairBearImbBottom
+                    bullOpposingImbWindow := bullPairBearImbWindow
             else
                 if close < bullPairBearImbBottom
                     bullPairBearImbReclaimConfirmed := false
@@ -2492,6 +2498,10 @@ export run(EnigmaConfig cfg) =>
                 if close < bearPairBullImbBottom
                     bearPairBullImbReclaimConfirmed := true
                     bearPairBullImbReclaimBar := bar_index
+                    bearOpposingImbReclaimPulseNow := true
+                    bearOpposingImbTop := bearPairBullImbTop
+                    bearOpposingImbBottom := bearPairBullImbBottom
+                    bearOpposingImbWindow := bearPairBullImbWindow
             else
                 if close > bearPairBullImbTop
                     bearPairBullImbReclaimConfirmed := false
@@ -2740,6 +2750,8 @@ export run(EnigmaConfig cfg) =>
     bool bearishMacro950FoundationExpectation = macro950FoundationWindowActive and macro950ResolvedFoundationDirection == -1
     bool bullishMacro950ComponentPulseNow = macro950SignalNow and macro950SignalDirection == 1
     bool bearishMacro950ComponentPulseNow = macro950SignalNow and macro950SignalDirection == -1
+    bool bullAlignedJudasImbReclaimNow = false
+    bool bearAlignedJudasImbReclaimNow = false
 
     // Persistent stage-aware sequence builder. The phase-extreme OB and IMB do not
     // both need to complete an additional retest. Once both components have accepted
@@ -2757,7 +2769,8 @@ export run(EnigmaConfig cfg) =>
         bool bullMacroImbArmed = bullishMacro950FoundationExpectation and not na(macro950Top) and not na(macro950Bottom)
         bool bullImbArmed = bullOpposingImbArmed or bullAlignedImbArmed or bullMacroImbArmed
         bool bullObRetestNow = bullishObComponentNow
-        bool bullImbRetestNow = bullishImbComponentNow or bullishMacro950ComponentPulseNow
+        bullAlignedJudasImbReclaimNow := bullOpposingImbReclaimPulseNow and bullObArmed and activeNyPhase == SESSION_PHASE_AM and sessionAnchorFpiFound and sessionAnchorDirection == 1 and macro950Found and macro950Direction == 1 and latestBullAgainstFpiWindow >= 0
+        bool bullImbRetestNow = bullishImbComponentNow or bullishMacro950ComponentPulseNow or bullAlignedJudasImbReclaimNow
         bool bullPairRetestTriggerNow = bullishSequenceContextActive and ((bullObRetestNow and bullImbArmed) or (bullImbRetestNow and bullObArmed))
 
         if bullishSequenceContextActive and (bullObArmed or bullImbArmed or bullObRetestNow or bullImbRetestNow)
@@ -2814,7 +2827,8 @@ export run(EnigmaConfig cfg) =>
         bool bearMacroImbArmed = bearishMacro950FoundationExpectation and not na(macro950Top) and not na(macro950Bottom)
         bool bearImbArmed = bearOpposingImbArmed or bearAlignedImbArmed or bearMacroImbArmed
         bool bearObRetestNow = bearishObComponentNow
-        bool bearImbRetestNow = bearishImbComponentNow or bearishMacro950ComponentPulseNow
+        bearAlignedJudasImbReclaimNow := bearOpposingImbReclaimPulseNow and bearObArmed and activeNyPhase == SESSION_PHASE_AM and sessionAnchorFpiFound and sessionAnchorDirection == -1 and macro950Found and macro950Direction == -1 and latestBearAgainstFpiWindow >= 0
+        bool bearImbRetestNow = bearishImbComponentNow or bearishMacro950ComponentPulseNow or bearAlignedJudasImbReclaimNow
         bool bearPairRetestTriggerNow = bearishSequenceContextActive and ((bearObRetestNow and bearImbArmed) or (bearImbRetestNow and bearObArmed))
 
         if bearishSequenceContextActive and (bearObArmed or bearImbArmed or bearObRetestNow or bearImbRetestNow)
@@ -2924,7 +2938,7 @@ export run(EnigmaConfig cfg) =>
         bool bullCounterControllerSetup = sessionAnchorFpiFound and sessionAnchorDirection == -1
         bool bullComponentsStillRespected = not na(bullRevFoundationObBottom) and not na(bullRevFoundationImbBottom) and close >= bullRevFoundationObBottom and close >= bullRevFoundationImbBottom
         bool bullFreshFoundationConfirmation = not na(bullRevFoundationConfirmBar) and bar_index == bullRevFoundationConfirmBar
-        bool bullInverseImbRetestConfirmation = bullFreshFoundationConfirmation and bullOpposingImbSignalNow and bullRevFoundationHasOb and close > bullRevFoundationImbTop
+        bool bullInverseImbRetestConfirmation = bullFreshFoundationConfirmation and (bullOpposingImbSignalNow or bullAlignedJudasImbReclaimNow) and bullRevFoundationHasOb and close > bullRevFoundationImbTop
         bool bullAlignedImbRetestConfirmation = bullFreshFoundationConfirmation and bullishAlignedImbComponentNow and bullRevFoundationHasOb and close > bullRevFoundationImbTop
         bool bullObRetestConfirmation = bullFreshFoundationConfirmation and orderBlockSignalNow and orderBlockSignalDirection == 1 and bullRevFoundationHasImb
         // Inverse-IMB confirmation is structural. The retest candle may close red;
@@ -2974,7 +2988,7 @@ export run(EnigmaConfig cfg) =>
         bool bearCounterControllerSetup = sessionAnchorFpiFound and sessionAnchorDirection == 1
         bool bearComponentsStillRespected = not na(bearRevFoundationObTop) and not na(bearRevFoundationImbTop) and close <= bearRevFoundationObTop and close <= bearRevFoundationImbTop
         bool bearFreshFoundationConfirmation = not na(bearRevFoundationConfirmBar) and bar_index == bearRevFoundationConfirmBar
-        bool bearInverseImbRetestConfirmation = bearFreshFoundationConfirmation and bearOpposingImbSignalNow and bearRevFoundationHasOb and close < bearRevFoundationImbBottom
+        bool bearInverseImbRetestConfirmation = bearFreshFoundationConfirmation and (bearOpposingImbSignalNow or bearAlignedJudasImbReclaimNow) and bearRevFoundationHasOb and close < bearRevFoundationImbBottom
         bool bearAlignedImbRetestConfirmation = bearFreshFoundationConfirmation and bearishAlignedImbComponentNow and bearRevFoundationHasOb and close < bearRevFoundationImbBottom
         bool bearObRetestConfirmation = bearFreshFoundationConfirmation and orderBlockSignalNow and orderBlockSignalDirection == -1 and bearRevFoundationHasImb
         bool bearDirectionalConfirmationClose = bearFreshFoundationConfirmation and (bearInverseImbRetestConfirmation or bearAlignedImbRetestConfirmation or (bearObRetestConfirmation and close < open))
