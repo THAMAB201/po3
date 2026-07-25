@@ -1,0 +1,1017 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © SunovaBeach
+//@version=6
+strategy(
+    "PO3 MMXM Enigma V9.1",
+    shorttitle = "PO3ENV91",
+    overlay = true,
+    max_labels_count = 500,
+    max_boxes_count = 500,
+    max_lines_count = 500,
+    max_bars_back = 200,
+    initial_capital = 100000,
+    pyramiding = 0,
+    process_orders_on_close = true,
+    calc_on_order_fills = false,
+    calc_on_every_tick = false,
+    use_bar_magnifier = true,
+    fill_orders_on_standard_ohlc = true,
+    default_qty_type = strategy.fixed,
+    default_qty_value = 5,
+    margin_long = 1,
+    margin_short = 1,
+    commission_type = strategy.commission.cash_per_contract,
+    commission_value = 0
+)
+
+import SunovaBeach/PO3MMXMMarketModel/2 as market
+
+// =============================================================================
+// Inputs
+// =============================================================================
+string G_ENGINE = "Engine"
+bool enableBot = input.bool(true, "Enable Strategy Orders", group = G_ENGINE)
+float orderQuantity = input.float(5.0, "Order Quantity", minval = 1.0, step = 1.0, group = G_ENGINE)
+bool tradeDecisionSessionsOnly = input.bool(true, "Orders Only During Decision Sessions", group = G_ENGINE)
+bool forceFlat = input.bool(true, "Force Flat", group = G_ENGINE)
+int forceFlatHour = input.int(16, "Force-Flat Hour", minval = 9, maxval = 17, group = G_ENGINE)
+int forceFlatMinute = input.int(50, "Force-Flat Minute", minval = 0, maxval = 59, group = G_ENGINE)
+
+string G_SCHEDULE = "Decision Session Schedule (New York)"
+int amStartHour = input.int(9, "AM Start Hour", minval = 0, maxval = 23, group = G_SCHEDULE, inline = "AM")
+int amStartMinute = input.int(30, "Minute", minval = 0, maxval = 59, group = G_SCHEDULE, inline = "AM")
+int lunchStartHour = input.int(11, "Lunch Start Hour", minval = 0, maxval = 23, group = G_SCHEDULE, inline = "LUNCH")
+int lunchStartMinute = input.int(30, "Minute", minval = 0, maxval = 59, group = G_SCHEDULE, inline = "LUNCH")
+int pmStartHour = input.int(13, "PM Start Hour", minval = 0, maxval = 23, group = G_SCHEDULE, inline = "PM")
+int pmStartMinute = input.int(30, "Minute", minval = 0, maxval = 59, group = G_SCHEDULE, inline = "PM")
+bool ignoreSessionBoundaryGapFpi = input.bool(false, "Stocks/RTH: Ignore FPI Crossing Session Start", group = G_SCHEDULE, tooltip = "When enabled, the first and middle candles of a Session FPI must both begin at or after the active session start. This prevents an overnight stock gap from becoming the 09:30 Session FPI.")
+int macroStartOffsetMinutes = input.int(20, "First Macro Starts After Session (minutes)", minval = 1, maxval = 60, group = G_SCHEDULE)
+int macroWindowMinutes = input.int(20, "First Macro Duration (minutes)", minval = 1, maxval = 60, group = G_SCHEDULE)
+bool enableOrbSafeguard = input.bool(true, "ORB Safeguard For Counter-FPI Judas Trades", group = G_SCHEDULE, tooltip = "Logic only. After Session-FPI disrespect and confirmed opposite Macro delivery, the first completed close outside the session's opening range must agree with the Judas direction before a counter-FPI trade is permitted.")
+int orbMinutes = input.int(15, "ORB Length (minutes)", minval = 5, maxval = 30, group = G_SCHEDULE)
+
+string G_STRUCTURE = "One-Minute Structure Model"
+int obSearchBars = input.int(6, "OB Search Bars Before Displacement", minval = 2, maxval = 20, group = G_STRUCTURE)
+bool enablePrimaryOb = input.bool(true, "Primary OB Retest Entries", group = G_STRUCTURE)
+bool enableImb = input.bool(true, "IMB Retest Entries", group = G_STRUCTURE)
+bool enablePostObImb = input.bool(true, "Post-OB IMB Entries", group = G_STRUCTURE)
+bool enableBgob = input.bool(true, "BGOB Retest Entries", group = G_STRUCTURE)
+bool rejectBgobBeyondHalf = input.bool(true, "Reject BGOB Retest Beyond 50% (Entry Only)", group = G_STRUCTURE)
+
+string G_PROTOCOL = "FPI / Judas / Delivery Protocol"
+bool allowJudasTrades = input.bool(true, "Allow Counter-FPI Judas Trades", group = G_PROTOCOL)
+bool requireFuture30mFpiForRecovery = input.bool(true, "Recovery Requires Future 30m FPI", group = G_PROTOCOL)
+bool directMacroRetestEntries = input.bool(true, "Allow Direct First-Macro FPI Retest Entry", group = G_PROTOCOL)
+bool prioritizeRangeExtremes = input.bool(true, "Prioritize Highest Sell / Lowest Buy Foundation", group = G_PROTOCOL)
+float rangeBandPercent = input.float(50.0, "Extreme Range Band (%)", minval = 10.0, maxval = 50.0, step = 1.0, group = G_PROTOCOL)
+bool waitNext30mAfterNormalExit = input.bool(true, "After Normal Exit, Wait For Later 30m FPI", group = G_PROTOCOL)
+
+string G_RISK = "Bracket / Campaign Management"
+float maximumStopPoints = input.float(50.0, "Maximum Stop (points)", minval = 0.25, step = 0.25, group = G_RISK)
+float fixedTargetPoints = input.float(150.0, "Fixed Target (points)", minval = 0.25, step = 0.25, group = G_RISK)
+bool useBreakEven = input.bool(false, "Move Non-Campaign Trade To Break-Even", group = G_RISK)
+float breakEvenTriggerPoints = input.float(80.0, "Break-Even Trigger (points)", minval = 0.25, step = 0.25, group = G_RISK)
+
+string G_VISUAL = "Visuals / Audit"
+bool showFpiBoxes = input.bool(true, "Show Session / 30m / Macro FPI", group = G_VISUAL)
+bool showStructureBoxes = input.bool(true, "Show OB / IMB / BGOB", group = G_VISUAL)
+bool showSignals = input.bool(true, "Show Entry / Exit / State Labels", group = G_VISUAL)
+bool showPeriodDividers = input.bool(true, "Show 30-Minute Dividers", group = G_VISUAL)
+bool showAuditLabel = input.bool(true, "Show Live State Label", group = G_VISUAL)
+int zoneTransparency = input.int(86, "Zone Transparency", minval = 60, maxval = 95, group = G_VISUAL)
+
+// =============================================================================
+// Constants and helpers
+// =============================================================================
+int PHASE_WAIT_FPI = 0
+int PHASE_JUDAS = 1
+int PHASE_ALIGNMENT = 2
+int PHASE_DELIVERY = 3
+
+minuteValue(int hourValue, int minutePart) => hourValue * 60 + minutePart
+amStart() => minuteValue(amStartHour, amStartMinute)
+lunchStart() => minuteValue(lunchStartHour, lunchStartMinute)
+pmStart() => minuteValue(pmStartHour, pmStartMinute)
+
+sessionIdFromMinute(int minuteValueInput) =>
+    int result = -1
+    if minuteValueInput >= amStart() and minuteValueInput < lunchStart()
+        result := 0
+    else if minuteValueInput >= lunchStart() and minuteValueInput < pmStart()
+        result := 1
+    else if minuteValueInput >= pmStart() and minuteValueInput < market.SESSION_END_MINUTE
+        result := 2
+    result
+
+sessionStartMinute(int sessionId) =>
+    sessionId == 0 ? amStart() : sessionId == 1 ? lunchStart() : sessionId == 2 ? pmStart() : -1
+
+sessionEndMinute(int sessionId) =>
+    sessionId == 0 ? lunchStart() : sessionId == 1 ? pmStart() : sessionId == 2 ? market.SESSION_END_MINUTE : -1
+
+sessionName(int sessionId) => sessionId == 0 ? "AM" : sessionId == 1 ? "LUNCH" : sessionId == 2 ? "PM" : "OFF"
+
+clockText(int minuteInput) =>
+    minuteInput < 0 ? "-" : str.tostring(int(math.floor(minuteInput / 60.0)), "00") + ":" + str.tostring(minuteInput % 60, "00")
+
+phaseText(int phase) => phase == PHASE_JUDAS ? "JUDAS" : phase == PHASE_ALIGNMENT ? "ALIGNMENT" : phase == PHASE_DELIVERY ? "DELIVERY" : "WAIT FPI"
+priceText(float value) => na(value) ? "-" : str.tostring(value, format.mintick)
+
+familyPriority(int family) =>
+    family == market.FAMILY_BGOB ? 4 :
+     family == market.FAMILY_PRIMARY_OB ? 3 :
+     family == market.FAMILY_POST_OB_IMB ? 2 :
+     family == market.FAMILY_IMB_RETEST ? 1 :
+     family == market.FAMILY_PRIOR_FPI ? 3 : 0
+
+structureColor(int direction) => direction == market.DIR_LONG ? color.green : direction == market.DIR_SHORT ? color.red : color.gray
+
+copyInto(target, source) =>
+    target.active := source.active
+    target.used := source.used
+    target.direction := source.direction
+    target.family := source.family
+    target.top := source.top
+    target.bottom := source.bottom
+    target.bodyTop := source.bodyTop
+    target.bodyBottom := source.bodyBottom
+    target.invalidation := source.invalidation
+    target.sourceBar := source.sourceBar
+    target.sourceTime := source.sourceTime
+    target.sourceWindow := source.sourceWindow
+    target.parentId := source.parentId
+    target.status := source.status
+    target.breakBar := source.breakBar
+    target.confirmBar := source.confirmBar
+    target.retestCount := source.retestCount
+    target.touching := source.touching
+    target.ruleId := source.ruleId
+    target.reason := source.reason
+    0
+
+clearStructure(target) =>
+    market.clearStructure(target)
+
+newZoneBox(int leftTime, int rightTime, float top, float bottom, int direction, string labelText, int transparency) =>
+    color base = structureColor(direction)
+    box.new(left = leftTime, top = top, right = rightTime, bottom = bottom, xloc = xloc.bar_time, bgcolor = color.new(base, transparency), border_color = color.new(base, math.max(0, transparency - 25)), text = labelText, text_color = color.new(color.white, 25), text_size = size.tiny)
+
+endTimestampForMinute(int endMinute, int nowMinute) => time + math.max(0, endMinute - nowMinute) * 60000
+endTimestampForWindow(int windowId, int nowMinute) => endTimestampForMinute(market.periodEndMinute(windowId), nowMinute)
+
+isMoreExtremeStructure(source, target, int direction) =>
+    source.active and (not target.active or target.used or target.status == market.STATUS_INVALID or direction == market.DIR_LONG and source.bottom < target.bottom or direction == market.DIR_SHORT and source.top > target.top)
+
+isMoreExtremeSignal(candidate, current, int direction) =>
+    candidate.valid and (not current.valid or direction == market.DIR_LONG and candidate.bottom < current.bottom or direction == market.DIR_SHORT and candidate.top > current.top or math.abs(candidate.top - current.top) <= syminfo.mintick and math.abs(candidate.bottom - current.bottom) <= syminfo.mintick and familyPriority(candidate.family) > familyPriority(current.family))
+
+chooseSignal(current, candidate, int direction) =>
+    result = market.copySignal(current)
+    if isMoreExtremeSignal(candidate, current, direction)
+        result := market.copySignal(candidate)
+    result
+
+armImb(target, event, int family, string ruleId, string reason) =>
+    bool replace = event.valid and isMoreExtremeStructure(market.structureFromFpi(event, family, ruleId, reason), target, event.direction)
+    if replace
+        market.setStructure(target, event.direction, family, event.top, event.bottom, event.top, event.bottom, event.direction == market.DIR_LONG ? event.bottom : event.top, event.sourceBar, event.sourceTime, event.sourceWindow, event.sourceTime, market.STATUS_ARMED, ruleId, reason)
+        target.breakBar := event.sourceBar
+    replace
+
+armOb(target, seed, string ruleId, string reason) =>
+    bool replace = seed.active and isMoreExtremeStructure(seed, target, seed.direction)
+    if replace
+        copyInto(target, seed)
+        target.ruleId := ruleId
+        target.reason := reason
+        target.breakBar := bar_index
+    replace
+
+updateRetest(structure, int family, string ruleId, string reason) =>
+    signal = market.newSignal()
+    int eligibleAfter = not na(structure.breakBar) ? structure.breakBar : structure.sourceBar
+    if structure.active and not structure.used and structure.status == market.STATUS_ARMED and bar_index > eligibleAfter
+        bool invalid = market.bodyCloseInvalidates(structure.direction, structure.invalidation, close)
+        bool touch = market.overlaps(structure.top, structure.bottom, high, low)
+        bool confirms = structure.direction == market.DIR_LONG ? close > structure.bodyTop and close > open : close < structure.bodyBottom and close < open
+        if invalid
+            structure.status := market.STATUS_INVALID
+        else if touch and confirms
+            structure.status := market.STATUS_CONFIRMED
+            structure.confirmBar := bar_index
+            signal := market.signalFromStructure(structure, family, true, false, ruleId, reason)
+    signal
+
+signalFromBgob(int direction, float top, float bottom, int sourceBar, int sourceTime, int sourceWindow, string ruleId, string reason) =>
+    market.makeSignal(direction, market.FAMILY_BGOB, top, bottom, direction == market.DIR_LONG ? bottom : top, sourceBar, sourceTime, sourceWindow, sourceTime, true, false, ruleId, reason)
+
+maximumStop(int direction, float entryPrice) => direction == market.DIR_LONG ? entryPrice - maximumStopPoints : entryPrice + maximumStopPoints
+fixedTarget(int direction, float entryPrice) => direction == market.DIR_LONG ? entryPrice + fixedTargetPoints : entryPrice - fixedTargetPoints
+
+rangeQualifies(signal, int direction, float rangeHigh, float rangeLow) =>
+    bool validRange = signal.valid and not na(rangeHigh) and not na(rangeLow) and rangeHigh > rangeLow
+    float rangeSize = validRange ? rangeHigh - rangeLow : na
+    float upperFloor = validRange ? rangeHigh - rangeSize * rangeBandPercent * 0.01 : na
+    float lowerCeiling = validRange ? rangeLow + rangeSize * rangeBandPercent * 0.01 : na
+    float mid = signal.valid ? market.midpoint(signal.top, signal.bottom) : na
+    validRange and (direction == market.DIR_SHORT ? mid >= upperFloor : mid <= lowerCeiling)
+
+// =============================================================================
+// Persistent state
+// =============================================================================
+var sessionFpi = market.newStructure()
+var macroFpi = market.newStructure()
+var recoveryFpi = market.newStructure()
+var counterRecoveryFpi = market.newStructure()
+
+var bullOb = market.newStructure()
+var bearOb = market.newStructure()
+var bullImb = market.newStructure()
+var bearImb = market.newStructure()
+var postObImb = market.newStructure()
+var parentOb = market.newStructure()
+
+var int currentDecisionSessionState = -1
+var int currentWindowState = -1
+var bool sessionFpiFound = false
+var int structuralBias = market.DIR_NONE
+var int campaignPhase = PHASE_WAIT_FPI
+var bool sessionFpiDisrespected = false
+var int judasStartBar = na
+var int judasStartWindow = -1
+var int recoveryArmBar = na
+var int recoveryWindow = -1
+var string recoveryReason = "NONE"
+var int structureEpochBar = na
+var bool alignmentStartedThisBar = false
+var bool deliveryStartedThisBar = false
+
+var bool macroFpiFound = false
+var bool macroAccepted = false
+var bool macroDirectConfirmed = false
+var bool macroDisrespected = false
+var bool macroCounterPending = false
+var bool macroCounterConfirmed = false
+var int macroCounterDirection = market.DIR_NONE
+var int macroBreakBar = na
+var int macroConfirmBar = na
+var bool macroSignalConsumed = false
+
+var float orbHigh = na
+var float orbLow = na
+var bool orbLocked = false
+var int orbBreakDirection = market.DIR_NONE
+var int orbBreakBar = na
+
+var float activeSessionHigh = na
+var float activeSessionLow = na
+
+var array<bool> windowFpiFound = array.new<bool>(market.LAST_WINDOW_ID + 1, false)
+var array<int> windowFpiDirection = array.new<int>(market.LAST_WINDOW_ID + 1, market.DIR_NONE)
+var array<float> windowFpiTop = array.new<float>(market.LAST_WINDOW_ID + 1, na)
+var array<float> windowFpiBottom = array.new<float>(market.LAST_WINDOW_ID + 1, na)
+var array<int> windowFpiBar = array.new<int>(market.LAST_WINDOW_ID + 1, na)
+
+var array<bool> bgobActive = array.new<bool>(market.LAST_WINDOW_ID + 1, false)
+var array<bool> bgobUsed = array.new<bool>(market.LAST_WINDOW_ID + 1, false)
+var array<int> bgobDirection = array.new<int>(market.LAST_WINDOW_ID + 1, market.DIR_NONE)
+var array<float> bgobTop = array.new<float>(market.LAST_WINDOW_ID + 1, na)
+var array<float> bgobBottom = array.new<float>(market.LAST_WINDOW_ID + 1, na)
+var array<int> bgobSourceBar = array.new<int>(market.LAST_WINDOW_ID + 1, na)
+var array<int> bgobSourceTime = array.new<int>(market.LAST_WINDOW_ID + 1, na)
+var array<int> bgobStatus = array.new<int>(market.LAST_WINDOW_ID + 1, market.STATUS_EMPTY)
+var array<int> bgobBreakBar = array.new<int>(market.LAST_WINDOW_ID + 1, na)
+var array<box> bgobBoxes = array.new<box>(market.LAST_WINDOW_ID + 1, na)
+
+var bool macroBgobActive = false
+var bool macroBgobUsed = false
+var int macroBgobDirection = market.DIR_NONE
+var float macroBgobTop = na
+var float macroBgobBottom = na
+var int macroBgobSourceBar = na
+var int macroBgobSourceTime = na
+var int macroBgobSourceWindow = -1
+var int macroBgobStatus = market.STATUS_EMPTY
+var int macroBgobBreakBar = na
+var box macroBgobBox = na
+
+var bool tradeActive = false
+var int tradeDirection = market.DIR_NONE
+var int tradePhase = PHASE_WAIT_FPI
+var int tradeEntrySession = -1
+var int tradeEntryWindow = -1
+var int tradeEntryBar = na
+var float tradeEntryPrice = na
+var int tradeFamily = market.FAMILY_NONE
+var float tradeControllerTop = na
+var float tradeControllerBottom = na
+var float tradeInvalidation = na
+var float tradeStop = na
+var float tradeTarget = na
+var bool tradeStrict = false
+var int tradeControllerWindow = -1
+var string tradeRuleId = ""
+var float bestFavorable = 0.0
+var bool breakEvenArmed = false
+
+var bool reentryLocked = false
+var int reentryExitWindow = -1
+var int reentryExitBar = na
+var int observedClosedTrades = 0
+var bool exitRequestedThisBar = false
+
+var array<box> drawings = array.new<box>()
+var array<label> labels = array.new<label>()
+var array<line> dividers = array.new<line>()
+var label auditLabel = na
+
+// =============================================================================
+// Time and reset
+// =============================================================================
+bool isOneMinute = timeframe.isminutes and timeframe.multiplier == 1
+bool confirmedBar = barstate.isconfirmed
+int nowMinute = market.minuteOfDay(0)
+bool scheduleValid = amStart() < lunchStart() and lunchStart() < pmStart() and pmStart() < market.SESSION_END_MINUTE
+bool inDecisionDay = scheduleValid and nowMinute >= amStart() and nowMinute < market.SESSION_END_MINUTE
+bool enteringDecisionDay = inDecisionDay and not inDecisionDay[1]
+int currentDecisionSession = sessionIdFromMinute(nowMinute)
+bool decisionSessionChanged = inDecisionDay and currentDecisionSession >= 0 and currentDecisionSession != currentDecisionSessionState
+int currentWindow = market.windowFromMinute(nowMinute)
+bool windowChanged = inDecisionDay and currentWindow >= 0 and currentWindow != currentWindowState
+int forceFlatAt = forceFlatHour * 60 + forceFlatMinute
+
+if enteringDecisionDay
+    while array.size(drawings) > 0
+        box.delete(array.pop(drawings))
+    while array.size(labels) > 0
+        label.delete(array.pop(labels))
+    while array.size(dividers) > 0
+        line.delete(array.pop(dividers))
+    for i = 0 to market.LAST_WINDOW_ID
+        array.set(windowFpiFound, i, false)
+        array.set(windowFpiDirection, i, market.DIR_NONE)
+        array.set(windowFpiTop, i, na)
+        array.set(windowFpiBottom, i, na)
+        array.set(windowFpiBar, i, na)
+        array.set(bgobActive, i, false)
+        array.set(bgobUsed, i, false)
+        array.set(bgobDirection, i, market.DIR_NONE)
+        array.set(bgobTop, i, na)
+        array.set(bgobBottom, i, na)
+        array.set(bgobSourceBar, i, na)
+        array.set(bgobSourceTime, i, na)
+        array.set(bgobStatus, i, market.STATUS_EMPTY)
+        array.set(bgobBreakBar, i, na)
+        array.set(bgobBoxes, i, na)
+    currentWindowState := currentWindow
+    currentDecisionSessionState := currentDecisionSession
+
+if decisionSessionChanged
+    currentDecisionSessionState := currentDecisionSession
+    sessionFpi := market.newStructure()
+    macroFpi := market.newStructure()
+    recoveryFpi := market.newStructure()
+    counterRecoveryFpi := market.newStructure()
+    sessionFpiFound := false
+    structuralBias := market.DIR_NONE
+    campaignPhase := PHASE_WAIT_FPI
+    sessionFpiDisrespected := false
+    judasStartBar := na
+    judasStartWindow := -1
+    recoveryArmBar := na
+    recoveryWindow := -1
+    recoveryReason := "NONE"
+    structureEpochBar := bar_index
+    alignmentStartedThisBar := false
+    deliveryStartedThisBar := false
+    macroFpiFound := false
+    macroAccepted := false
+    macroDirectConfirmed := false
+    macroDisrespected := false
+    macroCounterPending := false
+    macroCounterConfirmed := false
+    macroCounterDirection := market.DIR_NONE
+    macroBreakBar := na
+    macroConfirmBar := na
+    macroSignalConsumed := false
+    macroBgobActive := false
+    macroBgobUsed := false
+    macroBgobDirection := market.DIR_NONE
+    macroBgobTop := na
+    macroBgobBottom := na
+    macroBgobSourceBar := na
+    macroBgobSourceTime := na
+    macroBgobSourceWindow := -1
+    macroBgobStatus := market.STATUS_EMPTY
+    macroBgobBreakBar := na
+    macroBgobBox := na
+    orbHigh := na
+    orbLow := na
+    orbLocked := false
+    orbBreakDirection := market.DIR_NONE
+    orbBreakBar := na
+    activeSessionHigh := high
+    activeSessionLow := low
+    bullOb := market.newStructure()
+    bearOb := market.newStructure()
+    bullImb := market.newStructure()
+    bearImb := market.newStructure()
+    postObImb := market.newStructure()
+    parentOb := market.newStructure()
+    reentryLocked := false
+    reentryExitWindow := -1
+    reentryExitBar := na
+
+if inDecisionDay and currentDecisionSession >= 0
+    activeSessionHigh := na(activeSessionHigh) ? high : math.max(activeSessionHigh, high)
+    activeSessionLow := na(activeSessionLow) ? low : math.min(activeSessionLow, low)
+
+if windowChanged
+    currentWindowState := currentWindow
+    if showPeriodDividers
+        line divider = line.new(bar_index, low - syminfo.mintick * 20, bar_index, high + syminfo.mintick * 20, extend = extend.both, color = color.new(color.gray, 82), style = line.style_dotted)
+        array.push(dividers, divider)
+
+// Build ORB as logic-only.
+int activeSessionStart = sessionStartMinute(currentDecisionSession)
+int activeSessionEnd = sessionEndMinute(currentDecisionSession)
+int activeOrbEnd = activeSessionStart >= 0 ? activeSessionStart + orbMinutes : -1
+bool inOrbWindow = inDecisionDay and currentDecisionSession >= 0 and nowMinute >= activeSessionStart and nowMinute < activeOrbEnd
+if inOrbWindow
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow := na(orbLow) ? low : math.min(orbLow, low)
+if not orbLocked and activeOrbEnd >= 0 and nowMinute >= activeOrbEnd and not na(orbHigh) and not na(orbLow)
+    orbLocked := true
+
+// =============================================================================
+// Closed-trade reconciliation
+// =============================================================================
+exitRequestedThisBar := false
+bool closedTradeThisBar = strategy.closedtrades > observedClosedTrades
+if closedTradeThisBar
+    bool recoveryExit = false
+    for i = observedClosedTrades to strategy.closedtrades - 1
+        string exitComment = strategy.closedtrades.exit_comment(i)
+        recoveryExit := recoveryExit or exitComment == "JUDAS_ALIGNMENT_EXIT" or exitComment == "NEW_SESSION_DELIVERY"
+        if showSignals
+            float exitPrice = strategy.closedtrades.exit_price(i)
+            float sizeValue = strategy.closedtrades.size(i)
+            label exitLabel = label.new(bar_index, exitPrice, sizeValue > 0 ? "close buy" : "close sell", yloc = yloc.price, style = label.style_label_left, color = color.black, textcolor = color.white, size = size.small)
+            array.push(labels, exitLabel)
+    observedClosedTrades := strategy.closedtrades
+    if strategy.position_size == 0
+        tradeActive := false
+        tradeDirection := market.DIR_NONE
+        tradePhase := PHASE_WAIT_FPI
+        tradeEntrySession := -1
+        tradeEntryWindow := -1
+        tradeEntryBar := na
+        tradeEntryPrice := na
+        tradeFamily := market.FAMILY_NONE
+        tradeControllerTop := na
+        tradeControllerBottom := na
+        tradeInvalidation := na
+        tradeStop := na
+        tradeTarget := na
+        tradeStrict := false
+        tradeControllerWindow := -1
+        tradeRuleId := ""
+        bestFavorable := 0.0
+        breakEvenArmed := false
+        if waitNext30mAfterNormalExit and not recoveryExit
+            reentryLocked := true
+            reentryExitWindow := currentWindow
+            reentryExitBar := bar_index
+        else
+            reentryLocked := false
+            reentryExitWindow := -1
+            reentryExitBar := na
+
+// =============================================================================
+// FPI detection and registration
+// =============================================================================
+fpiEvent = market.detectFpi()
+int fpiFirstMinute = fpiEvent.valid ? market.minuteOfDay(2) : -1
+int fpiSessionId = fpiEvent.valid ? sessionIdFromMinute(fpiEvent.middleMinute) : -1
+int fpiSessionStart = sessionStartMinute(fpiSessionId)
+bool crossesSessionStart = fpiSessionId >= 0 and fpiFirstMinute < fpiSessionStart
+bool gapFilterPass = not ignoreSessionBoundaryGapFpi or not crossesSessionStart
+bool eligibleFpi = isOneMinute and confirmedBar and inDecisionDay and fpiEvent.valid and fpiEvent.sourceWindow >= 0 and fpiSessionId >= 0 and gapFilterPass
+bool firstForWindow = eligibleFpi and not array.get(windowFpiFound, fpiEvent.sourceWindow)
+bool newWindowFpi = false
+bool newSessionFpi = false
+bool newMacroFpi = false
+
+if firstForWindow
+    newWindowFpi := true
+    array.set(windowFpiFound, fpiEvent.sourceWindow, true)
+    array.set(windowFpiDirection, fpiEvent.sourceWindow, fpiEvent.direction)
+    array.set(windowFpiTop, fpiEvent.sourceWindow, fpiEvent.top)
+    array.set(windowFpiBottom, fpiEvent.sourceWindow, fpiEvent.bottom)
+    array.set(windowFpiBar, fpiEvent.sourceWindow, bar_index)
+    if showFpiBoxes
+        box fpiBox = newZoneBox(fpiEvent.sourceTime, endTimestampForWindow(fpiEvent.sourceWindow, nowMinute), fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, clockText(market.periodStartMinute(fpiEvent.sourceWindow)) + " FPI", zoneTransparency)
+        array.push(drawings, fpiBox)
+    if enableBgob
+        int w = fpiEvent.sourceWindow
+        array.set(bgobActive, w, true)
+        array.set(bgobUsed, w, false)
+        array.set(bgobDirection, w, fpiEvent.direction)
+        array.set(bgobTop, w, fpiEvent.thirdHigh)
+        array.set(bgobBottom, w, fpiEvent.thirdLow)
+        array.set(bgobSourceBar, w, bar_index)
+        array.set(bgobSourceTime, w, time)
+        array.set(bgobStatus, w, market.STATUS_ARMED)
+        array.set(bgobBreakBar, w, na)
+        if showStructureBoxes
+            box b = newZoneBox(time, endTimestampForMinute(sessionEndMinute(fpiSessionId), nowMinute), fpiEvent.thirdHigh, fpiEvent.thirdLow, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish BGOB" : "Bearish BGOB", math.max(70, zoneTransparency - 8))
+            array.set(bgobBoxes, w, b)
+            array.push(drawings, b)
+    if reentryLocked and fpiEvent.sourceWindow > reentryExitWindow and bar_index > nz(reentryExitBar, -1)
+        reentryLocked := false
+
+bool fpiInActiveSession = eligibleFpi and fpiSessionId == currentDecisionSession and fpiEvent.middleMinute >= activeSessionStart and fpiEvent.middleMinute < activeSessionEnd
+if fpiInActiveSession and not sessionFpiFound
+    sessionFpi := market.structureFromFpi(fpiEvent, market.FAMILY_NONE, "SESSION-FPI", "SESSION_STRUCTURAL_BIAS")
+    sessionFpiFound := true
+    structuralBias := fpiEvent.direction
+    campaignPhase := PHASE_JUDAS
+    sessionFpiDisrespected := false
+    judasStartBar := na
+    judasStartWindow := -1
+    structureEpochBar := bar_index
+    newSessionFpi := true
+    if showFpiBoxes
+        box s = newZoneBox(fpiEvent.sourceTime, endTimestampForMinute(activeSessionEnd, nowMinute), fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentDecisionSession) + " SESSION FPI", math.max(65, zoneTransparency - 12))
+        array.push(drawings, s)
+
+int macroStart = activeSessionStart >= 0 ? activeSessionStart + macroStartOffsetMinutes : -1
+int macroEnd = macroStart >= 0 ? int(math.min(activeSessionEnd, macroStart + macroWindowMinutes)) : -1
+bool fpiInMacro = fpiInActiveSession and macroStart >= 0 and fpiEvent.middleMinute >= macroStart and fpiEvent.middleMinute < macroEnd
+if fpiInMacro and not macroFpiFound
+    macroFpi := market.structureFromFpi(fpiEvent, market.FAMILY_PRIOR_FPI, "MACRO-FPI", "FIRST_SESSION_MACRO_FPI")
+    macroFpiFound := true
+    macroAccepted := false
+    macroDirectConfirmed := false
+    macroDisrespected := false
+    macroCounterPending := false
+    macroCounterConfirmed := false
+    macroCounterDirection := market.DIR_NONE
+    macroBreakBar := na
+    macroConfirmBar := na
+    macroSignalConsumed := false
+    newMacroFpi := true
+    if showFpiBoxes
+        box m = newZoneBox(fpiEvent.sourceTime, endTimestampForMinute(activeSessionEnd, nowMinute), fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentDecisionSession) + " FIRST MACRO FPI " + clockText(macroStart), math.max(65, zoneTransparency - 8))
+        array.push(drawings, m)
+    bool duplicateWindowBgob = firstForWindow
+    if enableBgob and not duplicateWindowBgob
+        macroBgobActive := true
+        macroBgobUsed := false
+        macroBgobDirection := fpiEvent.direction
+        macroBgobTop := fpiEvent.thirdHigh
+        macroBgobBottom := fpiEvent.thirdLow
+        macroBgobSourceBar := bar_index
+        macroBgobSourceTime := time
+        macroBgobSourceWindow := fpiEvent.sourceWindow
+        macroBgobStatus := market.STATUS_ARMED
+        macroBgobBreakBar := na
+        if showStructureBoxes
+            macroBgobBox := newZoneBox(time, endTimestampForMinute(activeSessionEnd, nowMinute), macroBgobTop, macroBgobBottom, macroBgobDirection, macroBgobDirection == market.DIR_LONG ? "Bullish BGOB (Macro)" : "Bearish BGOB (Macro)", math.max(65, zoneTransparency - 12))
+            array.push(drawings, macroBgobBox)
+
+// =============================================================================
+// Session structural bias, Judas, recovery, and delivery lifecycle
+// =============================================================================
+alignmentStartedThisBar := false
+deliveryStartedThisBar := false
+
+if sessionFpiFound and campaignPhase != PHASE_DELIVERY and bar_index > sessionFpi.sourceBar
+    bool disrespectNow = market.bodyCloseInvalidates(structuralBias, sessionFpi.invalidation, close)
+    if disrespectNow and not sessionFpiDisrespected
+        sessionFpiDisrespected := true
+        judasStartBar := bar_index
+        judasStartWindow := currentWindow
+        structureEpochBar := bar_index
+        bullOb := market.newStructure()
+        bearOb := market.newStructure()
+        bullImb := market.newStructure()
+        bearImb := market.newStructure()
+        postObImb := market.newStructure()
+        parentOb := market.newStructure()
+        orbBreakDirection := market.DIR_NONE
+        orbBreakBar := na
+
+// Future 30-minute FPI ends Judas only in one of two ways:
+// 1) it points in the original Session-FPI direction, or
+// 2) it points against the Session FPI and is later disrespected back toward it.
+if sessionFpiFound and sessionFpiDisrespected and campaignPhase == PHASE_JUDAS and newWindowFpi and fpiEvent.sourceWindow > judasStartWindow and bar_index > judasStartBar
+    if fpiEvent.direction == structuralBias
+        recoveryFpi := market.structureFromFpi(fpiEvent, market.FAMILY_PRIOR_FPI, "RECOVERY-FPI", "FUTURE_30M_FPI_ALIGNED_WITH_SESSION")
+        campaignPhase := PHASE_ALIGNMENT
+        recoveryArmBar := bar_index
+        recoveryWindow := fpiEvent.sourceWindow
+        recoveryReason := "ALIGNED FUTURE 30M FPI"
+        alignmentStartedThisBar := true
+        structureEpochBar := bar_index
+    else
+        counterRecoveryFpi := market.structureFromFpi(fpiEvent, market.FAMILY_PRIOR_FPI, "COUNTER-RECOVERY-FPI", "WAIT_COUNTER_FPI_DISRESPECT")
+
+if sessionFpiFound and sessionFpiDisrespected and campaignPhase == PHASE_JUDAS and counterRecoveryFpi.active and bar_index > counterRecoveryFpi.sourceBar
+    bool counterFpiDisrespected = market.bodyCloseInvalidates(counterRecoveryFpi.direction, counterRecoveryFpi.invalidation, close)
+    if counterFpiDisrespected
+        recoveryFpi := market.copyStructure(counterRecoveryFpi)
+        recoveryFpi.direction := structuralBias
+        recoveryFpi.invalidation := structuralBias == market.DIR_LONG ? counterRecoveryFpi.top : counterRecoveryFpi.bottom
+        campaignPhase := PHASE_ALIGNMENT
+        recoveryArmBar := bar_index
+        recoveryWindow := counterRecoveryFpi.sourceWindow
+        recoveryReason := "COUNTER 30M FPI DISRESPECTED INTO SESSION BIAS"
+        alignmentStartedThisBar := true
+        structureEpochBar := bar_index
+        counterRecoveryFpi := market.newStructure()
+
+if alignmentStartedThisBar
+    bullOb := market.newStructure()
+    bearOb := market.newStructure()
+    bullImb := market.newStructure()
+    bearImb := market.newStructure()
+    postObImb := market.newStructure()
+    parentOb := market.newStructure()
+    if showSignals
+        label a = label.new(bar_index, close, "JUDAS END\nWAIT " + market.sideText(structuralBias) + " FOUNDATION", yloc = yloc.price, style = structuralBias == market.DIR_LONG ? label.style_label_up : label.style_label_down, color = color.new(color.yellow, 10), textcolor = color.black, size = size.small)
+        array.push(labels, a)
+
+// =============================================================================
+// Macro lifecycle and optional ORB safeguard
+// =============================================================================
+if macroFpiFound and bar_index > macroFpi.sourceBar
+    bool macroOriginalClose = market.directionalClose(macroFpi.direction, macroFpi.top, macroFpi.bottom, close)
+    bool macroTouch = market.overlaps(macroFpi.top, macroFpi.bottom, high, low)
+    bool macroFail = market.bodyCloseInvalidates(macroFpi.direction, macroFpi.invalidation, close)
+    if not macroAccepted and macroOriginalClose
+        macroAccepted := true
+    if macroAccepted and macroTouch and macroOriginalClose and bar_index > macroFpi.sourceBar
+        macroDirectConfirmed := true
+    if macroFail and not macroDisrespected
+        macroDisrespected := true
+        macroCounterPending := true
+        macroCounterConfirmed := false
+        macroCounterDirection := -macroFpi.direction
+        macroBreakBar := bar_index
+        macroConfirmBar := na
+        macroSignalConsumed := false
+    if macroCounterPending and not macroCounterConfirmed and bar_index > nz(macroBreakBar, -1)
+        bool counterRetest = market.overlaps(macroFpi.top, macroFpi.bottom, high, low)
+        bool counterConfirm = macroCounterDirection == market.DIR_LONG ? close > macroFpi.top and close > open : close < macroFpi.bottom and close < open
+        if counterRetest and counterConfirm
+            macroCounterConfirmed := true
+            macroConfirmBar := bar_index
+    if macroDisrespected and macroOriginalClose
+        macroDisrespected := false
+        macroCounterPending := false
+        macroCounterConfirmed := false
+        macroCounterDirection := market.DIR_NONE
+        macroBreakBar := na
+        macroConfirmBar := na
+        macroSignalConsumed := false
+
+bool orbStandby = enableOrbSafeguard and orbLocked and sessionFpiDisrespected and macroCounterConfirmed
+if orbStandby and orbBreakDirection == market.DIR_NONE and confirmedBar
+    if close > orbHigh
+        orbBreakDirection := market.DIR_LONG
+        orbBreakBar := bar_index
+    else if close < orbLow
+        orbBreakDirection := market.DIR_SHORT
+        orbBreakBar := bar_index
+
+// =============================================================================
+// Create OB / IMB inventory from every eligible FPI
+// =============================================================================
+bool inventoryAllowsBias = sessionFpiFound and (campaignPhase == PHASE_ALIGNMENT or campaignPhase == PHASE_DELIVERY or not sessionFpiDisrespected)
+bool inventoryAllowsJudas = sessionFpiFound and campaignPhase == PHASE_JUDAS and sessionFpiDisrespected and allowJudasTrades
+int judasDirection = sessionFpiFound ? -structuralBias : market.DIR_NONE
+
+if eligibleFpi and fpiInActiveSession and not newSessionFpi
+    bool allowedDirection = fpiEvent.direction == structuralBias and inventoryAllowsBias or fpiEvent.direction == judasDirection and inventoryAllowsJudas
+    if allowedDirection
+        if enableImb
+            if fpiEvent.direction == market.DIR_LONG
+                bool armed = armImb(bullImb, fpiEvent, market.FAMILY_IMB_RETEST, "IMB-BULL", "BULL_IMB_RETEST")
+                if armed and showStructureBoxes
+                    box b = newZoneBox(fpiEvent.sourceTime, endTimestampForWindow(fpiEvent.sourceWindow, nowMinute), fpiEvent.top, fpiEvent.bottom, market.DIR_LONG, "Bullish IMB", zoneTransparency)
+                    array.push(drawings, b)
+            else
+                bool armed = armImb(bearImb, fpiEvent, market.FAMILY_IMB_RETEST, "IMB-BEAR", "BEAR_IMB_RETEST")
+                if armed and showStructureBoxes
+                    box b = newZoneBox(fpiEvent.sourceTime, endTimestampForWindow(fpiEvent.sourceWindow, nowMinute), fpiEvent.top, fpiEvent.bottom, market.DIR_SHORT, "Bearish IMB", zoneTransparency)
+                    array.push(drawings, b)
+        if enablePrimaryOb
+            seed = market.detectObSeed(fpiEvent.direction, obSearchBars, fpiEvent.sourceWindow)
+            if seed.active
+                if fpiEvent.direction == market.DIR_LONG
+                    bool armed = armOb(bullOb, seed, "OB-BULL", "BULLISH_BOLO_OB")
+                    if armed and showStructureBoxes
+                        box b = newZoneBox(seed.sourceTime, endTimestampForWindow(fpiEvent.sourceWindow, nowMinute), seed.top, seed.bottom, market.DIR_LONG, "Bullish OB", zoneTransparency)
+                        array.push(drawings, b)
+                else
+                    bool armed = armOb(bearOb, seed, "OB-BEAR", "BEARISH_BOLO_OB")
+                    if armed and showStructureBoxes
+                        box b = newZoneBox(seed.sourceTime, endTimestampForWindow(fpiEvent.sourceWindow, nowMinute), seed.top, seed.bottom, market.DIR_SHORT, "Bearish OB", zoneTransparency)
+                        array.push(drawings, b)
+        if enablePostObImb and parentOb.active and parentOb.direction == fpiEvent.direction and bar_index > parentOb.confirmBar
+            bool armed = armImb(postObImb, fpiEvent, market.FAMILY_POST_OB_IMB, "POSTOB", "POST_OB_IMB_RETEST")
+            if armed and showStructureBoxes
+                box b = newZoneBox(fpiEvent.sourceTime, endTimestampForWindow(fpiEvent.sourceWindow, nowMinute), fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, "Post-OB IMB", zoneTransparency)
+                array.push(drawings, b)
+
+// =============================================================================
+// Structure confirmation pulses
+// =============================================================================
+bullObSignal = enablePrimaryOb ? updateRetest(bullOb, market.FAMILY_PRIMARY_OB, "OB-BULL-02", "BULLISH_OB_RETEST_RESPECT") : market.newSignal()
+bearObSignal = enablePrimaryOb ? updateRetest(bearOb, market.FAMILY_PRIMARY_OB, "OB-BEAR-02", "BEARISH_OB_RETEST_RESPECT") : market.newSignal()
+bullImbSignal = enableImb ? updateRetest(bullImb, market.FAMILY_IMB_RETEST, "IMB-BULL-02", "BULLISH_IMB_RETEST_RESPECT") : market.newSignal()
+bearImbSignal = enableImb ? updateRetest(bearImb, market.FAMILY_IMB_RETEST, "IMB-BEAR-02", "BEARISH_IMB_RETEST_RESPECT") : market.newSignal()
+postObSignal = enablePostObImb ? updateRetest(postObImb, market.FAMILY_POST_OB_IMB, postObImb.direction == market.DIR_LONG ? "POSTOB-BUY" : "POSTOB-SELL", "POST_OB_IMB_RETEST_RESPECT") : market.newSignal()
+
+if bullObSignal.valid
+    parentOb := market.copyStructure(bullOb)
+    parentOb.confirmBar := bar_index
+if bearObSignal.valid
+    parentOb := market.copyStructure(bearOb)
+    parentOb.confirmBar := bar_index
+
+bgobSignal = market.newSignal()
+if enableBgob and confirmedBar and inDecisionDay
+    for w = 0 to market.LAST_WINDOW_ID
+        bool active = array.get(bgobActive, w)
+        bool used = array.get(bgobUsed, w)
+        int direction = array.get(bgobDirection, w)
+        float top = array.get(bgobTop, w)
+        float bottom = array.get(bgobBottom, w)
+        int sourceBar = array.get(bgobSourceBar, w)
+        int sourceTime = array.get(bgobSourceTime, w)
+        int status = array.get(bgobStatus, w)
+        int breakBar = array.get(bgobBreakBar, w)
+        if active and not used and direction != market.DIR_NONE and not na(sourceBar) and bar_index > sourceBar
+            if status == market.STATUS_ARMED
+                bool destroyed = direction == market.DIR_LONG ? low < bottom : high > top
+                bool broke = direction == market.DIR_LONG ? close > top : close < bottom
+                if destroyed
+                    array.set(bgobActive, w, false)
+                    array.set(bgobStatus, w, market.STATUS_INVALID)
+                else if broke
+                    array.set(bgobStatus, w, market.STATUS_BROKEN)
+                    array.set(bgobBreakBar, w, bar_index)
+            else if status == market.STATUS_BROKEN and bar_index > nz(breakBar, -1)
+                bool retest = market.overlaps(top, bottom, high, low)
+                float mid = market.midpoint(top, bottom)
+                bool beyondHalf = direction == market.DIR_LONG ? low < mid : high > mid
+                bool confirms = direction == market.DIR_LONG ? close > top and close > open : close < bottom and close < open
+                if retest and rejectBgobBeyondHalf and beyondHalf
+                    array.set(bgobActive, w, false)
+                    array.set(bgobStatus, w, market.STATUS_INVALID)
+                else if retest and confirms
+                    array.set(bgobStatus, w, market.STATUS_CONFIRMED)
+                    candidate = signalFromBgob(direction, top, bottom, sourceBar, sourceTime, w, direction == market.DIR_LONG ? "BGOB-BUY" : "BGOB-SELL", direction == market.DIR_LONG ? "BULLISH_BGOB_RETEST_RESPECT" : "BEARISH_BGOB_RETEST_RESPECT")
+                    if not bgobSignal.valid or w >= bgobSignal.sourceWindow
+                        bgobSignal := market.copySignal(candidate)
+
+macroBgobSignal = market.newSignal()
+if enableBgob and macroBgobActive and not macroBgobUsed and bar_index > nz(macroBgobSourceBar, -1)
+    if macroBgobStatus == market.STATUS_ARMED
+        bool destroyed = macroBgobDirection == market.DIR_LONG ? low < macroBgobBottom : high > macroBgobTop
+        bool broke = macroBgobDirection == market.DIR_LONG ? close > macroBgobTop : close < macroBgobBottom
+        if destroyed
+            macroBgobActive := false
+            macroBgobStatus := market.STATUS_INVALID
+        else if broke
+            macroBgobStatus := market.STATUS_BROKEN
+            macroBgobBreakBar := bar_index
+    else if macroBgobStatus == market.STATUS_BROKEN and bar_index > nz(macroBgobBreakBar, -1)
+        bool retest = market.overlaps(macroBgobTop, macroBgobBottom, high, low)
+        float mid = market.midpoint(macroBgobTop, macroBgobBottom)
+        bool beyondHalf = macroBgobDirection == market.DIR_LONG ? low < mid : high > mid
+        bool confirms = macroBgobDirection == market.DIR_LONG ? close > macroBgobTop and close > open : close < macroBgobBottom and close < open
+        if retest and rejectBgobBeyondHalf and beyondHalf
+            macroBgobActive := false
+            macroBgobStatus := market.STATUS_INVALID
+        else if retest and confirms
+            macroBgobStatus := market.STATUS_CONFIRMED
+            macroBgobSignal := signalFromBgob(macroBgobDirection, macroBgobTop, macroBgobBottom, macroBgobSourceBar, macroBgobSourceTime, macroBgobSourceWindow, macroBgobDirection == market.DIR_LONG ? "MACRO-BGOB-BUY" : "MACRO-BGOB-SELL", "FIRST_MACRO_BGOB_RETEST_RESPECT")
+
+// Direct Macro FPI signals.
+macroDirectSignal = market.newSignal()
+if directMacroRetestEntries and macroFpiFound and macroDirectConfirmed and not macroSignalConsumed and macroFpi.direction == structuralBias and campaignPhase != PHASE_JUDAS or directMacroRetestEntries and macroFpiFound and macroDirectConfirmed and not macroSignalConsumed and macroFpi.direction == structuralBias and not sessionFpiDisrespected
+    macroDirectSignal := market.makeSignal(macroFpi.direction, market.FAMILY_PRIOR_FPI, macroFpi.top, macroFpi.bottom, macroFpi.invalidation, macroFpi.sourceBar, macroFpi.sourceTime, macroFpi.sourceWindow, macroFpi.parentId, true, false, macroFpi.direction == market.DIR_LONG ? "MACRO-FPI-BUY" : "MACRO-FPI-SELL", "ALIGNED_FIRST_MACRO_RETEST")
+
+macroCounterSignal = market.newSignal()
+if directMacroRetestEntries and macroCounterConfirmed and not macroSignalConsumed and campaignPhase == PHASE_JUDAS and sessionFpiDisrespected and macroCounterDirection == judasDirection
+    macroCounterSignal := market.makeSignal(macroCounterDirection, market.FAMILY_PRIOR_FPI, macroFpi.top, macroFpi.bottom, macroCounterDirection == market.DIR_LONG ? macroFpi.bottom : macroFpi.top, macroFpi.sourceBar, macroFpi.sourceTime, macroFpi.sourceWindow, macroFpi.parentId, true, true, macroCounterDirection == market.DIR_LONG ? "JUDAS-MACRO-BUY" : "JUDAS-MACRO-SELL", "SESSION_DISRESPECT_PLUS_MACRO_RETEST")
+
+// =============================================================================
+// Select the best confirmed foundation for each direction
+// =============================================================================
+biasSignal = market.newSignal()
+judasSignal = market.newSignal()
+
+allSignals = array.new<market.Signal>()
+array.push(allSignals, bullObSignal)
+array.push(allSignals, bearObSignal)
+array.push(allSignals, bullImbSignal)
+array.push(allSignals, bearImbSignal)
+array.push(allSignals, postObSignal)
+array.push(allSignals, bgobSignal)
+array.push(allSignals, macroBgobSignal)
+array.push(allSignals, macroDirectSignal)
+array.push(allSignals, macroCounterSignal)
+
+for i = 0 to array.size(allSignals) - 1
+    s = array.get(allSignals, i)
+    if s.valid and s.sourceBar > nz(structureEpochBar, -1)
+        if s.direction == structuralBias
+            bool locationOk = not prioritizeRangeExtremes or rangeQualifies(s, structuralBias, activeSessionHigh, activeSessionLow) or s.family == market.FAMILY_BGOB or s.family == market.FAMILY_PRIOR_FPI
+            if locationOk
+                biasSignal := chooseSignal(biasSignal, s, structuralBias)
+        else if s.direction == judasDirection
+            bool locationOk = not prioritizeRangeExtremes or rangeQualifies(s, judasDirection, activeSessionHigh, activeSessionLow) or s.family == market.FAMILY_BGOB or s.family == market.FAMILY_PRIOR_FPI
+            if locationOk
+                judasSignal := chooseSignal(judasSignal, s, judasDirection)
+
+bool preDisrespectBiasPermission = campaignPhase == PHASE_JUDAS and not sessionFpiDisrespected
+bool alignmentBiasPermission = campaignPhase == PHASE_ALIGNMENT and biasSignal.valid and biasSignal.sourceBar > recoveryArmBar
+bool deliveryBiasPermission = campaignPhase == PHASE_DELIVERY
+bool biasMacroPermission = not macroFpiFound or macroFpi.direction == structuralBias and not macroDisrespected or campaignPhase == PHASE_ALIGNMENT or campaignPhase == PHASE_DELIVERY
+
+bool preMacroCounterPermission = not macroFpiFound and nowMinute < macroStart
+bool macroCounterPermission = macroCounterConfirmed and macroCounterDirection == judasDirection
+bool orbCounterPermission = not enableOrbSafeguard or not orbStandby or orbBreakDirection == judasDirection
+bool judasPermission = allowJudasTrades and campaignPhase == PHASE_JUDAS and sessionFpiDisrespected and (preMacroCounterPermission or macroCounterPermission) and orbCounterPermission
+
+entrySignal = market.newSignal()
+if sessionFpiFound
+    if alignmentBiasPermission and biasMacroPermission
+        entrySignal := market.copySignal(biasSignal)
+        campaignPhase := PHASE_DELIVERY
+        deliveryStartedThisBar := true
+    else if preDisrespectBiasPermission and biasSignal.valid and biasMacroPermission
+        entrySignal := market.copySignal(biasSignal)
+        campaignPhase := PHASE_DELIVERY
+        deliveryStartedThisBar := true
+    else if campaignPhase == PHASE_DELIVERY and biasSignal.valid
+        entrySignal := market.copySignal(biasSignal)
+    else if judasPermission and judasSignal.valid
+        entrySignal := market.copySignal(judasSignal)
+
+// Same-direction structures validate and can upgrade a controller without pyramiding.
+if tradeActive and entrySignal.valid and entrySignal.direction == tradeDirection
+    bool laterWindow = entrySignal.sourceWindow > tradeControllerWindow
+    bool higherFamily = familyPriority(entrySignal.family) > familyPriority(tradeFamily)
+    bool moreExtreme = tradeDirection == market.DIR_LONG ? entrySignal.bottom < tradeControllerBottom : entrySignal.top > tradeControllerTop
+    if laterWindow or higherFamily or moreExtreme
+        tradeFamily := entrySignal.family
+        tradeControllerTop := entrySignal.top
+        tradeControllerBottom := entrySignal.bottom
+        tradeInvalidation := entrySignal.family == market.FAMILY_BGOB ? (tradeDirection == market.DIR_LONG ? entrySignal.bottom : entrySignal.top) : entrySignal.invalidation
+        tradeControllerWindow := entrySignal.sourceWindow
+        tradeRuleId := entrySignal.ruleId
+        tradeStrict := true
+        if entrySignal.family == market.FAMILY_BGOB
+            tradeStop := tradeDirection == market.DIR_LONG ? math.max(tradeStop, entrySignal.bottom) : math.min(tradeStop, entrySignal.top)
+        if showSignals
+            label v = label.new(bar_index, close, tradeDirection == market.DIR_LONG ? "MMBM FOUNDATION" : "MMSM FOUNDATION", yloc = yloc.price, style = tradeDirection == market.DIR_LONG ? label.style_label_up : label.style_label_down, color = color.new(structureColor(tradeDirection), 15), textcolor = color.white, size = size.tiny)
+            array.push(labels, v)
+    entrySignal := market.newSignal()
+
+// Recovery ends a Judas trade immediately, but never reverses on the same bar.
+if alignmentStartedThisBar and tradeActive and tradeDirection == judasDirection
+    strategy.close("ENIGMA", comment = "JUDAS_ALIGNMENT_EXIT")
+    exitRequestedThisBar := true
+
+// =============================================================================
+// Order execution
+// =============================================================================
+bool sessionOrderPermission = not tradeDecisionSessionsOnly or inDecisionDay
+bool canSubmit = enableBot and isOneMinute and confirmedBar and sessionOrderPermission and nowMinute < forceFlatAt and not closedTradeThisBar and not exitRequestedThisBar
+bool flatPlatform = strategy.position_size == 0
+bool freshEntry = not tradeActive and flatPlatform
+bool phaseReentryOverride = deliveryStartedThisBar or campaignPhase == PHASE_ALIGNMENT
+bool reentryPermission = not reentryLocked or phaseReentryOverride
+bool crossSessionDeliveryReversal = tradeActive and tradeEntrySession != currentDecisionSession and campaignPhase == PHASE_DELIVERY and entrySignal.valid and entrySignal.direction == structuralBias and entrySignal.direction != tradeDirection
+bool protocolReversal = tradeActive and entrySignal.valid and entrySignal.direction != tradeDirection and (crossSessionDeliveryReversal or tradePhase == PHASE_JUDAS and campaignPhase == PHASE_DELIVERY)
+
+if canSubmit and entrySignal.valid and ((freshEntry and reentryPermission) or protocolReversal)
+    float entryPrice = close
+    bool bgobController = entrySignal.family == market.FAMILY_BGOB
+    float stopPrice = bgobController ? (entrySignal.direction == market.DIR_LONG ? entrySignal.bottom : entrySignal.top) : maximumStop(entrySignal.direction, entryPrice)
+    float targetPrice = fixedTarget(entrySignal.direction, entryPrice)
+    strategy.entry("ENIGMA", entrySignal.direction == market.DIR_LONG ? strategy.long : strategy.short, qty = orderQuantity, comment = entrySignal.ruleId)
+    strategy.exit("SLTP", from_entry = "ENIGMA", stop = stopPrice, limit = targetPrice, comment_profit = "TP", comment_loss = "SL")
+    tradeActive := true
+    tradeDirection := entrySignal.direction
+    tradePhase := campaignPhase == PHASE_DELIVERY ? PHASE_DELIVERY : PHASE_JUDAS
+    tradeEntrySession := currentDecisionSession
+    tradeEntryWindow := entrySignal.sourceWindow
+    tradeEntryBar := bar_index
+    tradeEntryPrice := entryPrice
+    tradeFamily := entrySignal.family
+    tradeControllerTop := entrySignal.top
+    tradeControllerBottom := entrySignal.bottom
+    tradeInvalidation := bgobController ? stopPrice : entrySignal.invalidation
+    tradeStop := stopPrice
+    tradeTarget := targetPrice
+    tradeStrict := true
+    tradeControllerWindow := entrySignal.sourceWindow
+    tradeRuleId := entrySignal.ruleId
+    bestFavorable := 0.0
+    breakEvenArmed := false
+    reentryLocked := false
+    if entrySignal.family == market.FAMILY_BGOB
+        if entrySignal.ruleId == "MACRO-BGOB-BUY" or entrySignal.ruleId == "MACRO-BGOB-SELL"
+            macroBgobUsed := true
+            macroBgobActive := false
+        else
+            for w = 0 to market.LAST_WINDOW_ID
+                if array.get(bgobSourceBar, w) == entrySignal.sourceBar and array.get(bgobDirection, w) == entrySignal.direction
+                    array.set(bgobUsed, w, true)
+                    array.set(bgobActive, w, false)
+    if entrySignal.family == market.FAMILY_PRIOR_FPI
+        macroSignalConsumed := true
+    if entrySignal.family == market.FAMILY_PRIMARY_OB
+        if entrySignal.direction == market.DIR_LONG
+            bullOb.used := true
+        else
+            bearOb.used := true
+    else if entrySignal.family == market.FAMILY_IMB_RETEST
+        if entrySignal.direction == market.DIR_LONG
+            bullImb.used := true
+        else
+            bearImb.used := true
+    else if entrySignal.family == market.FAMILY_POST_OB_IMB
+        postObImb.used := true
+    if showSignals
+        label e = label.new(bar_index, close, entrySignal.direction == market.DIR_LONG ? "buy\n" + entrySignal.ruleId : "sell\n" + entrySignal.ruleId, yloc = yloc.price, style = entrySignal.direction == market.DIR_LONG ? label.style_label_up : label.style_label_down, color = structureColor(entrySignal.direction), textcolor = color.white, size = size.small)
+        array.push(labels, e)
+
+// =============================================================================
+// Position management
+// =============================================================================
+if tradeActive and bar_index > tradeEntryBar
+    if strategy.position_size != 0 and not na(strategy.position_avg_price)
+        tradeEntryPrice := strategy.position_avg_price
+    float favorable = tradeDirection == market.DIR_LONG ? high - tradeEntryPrice : tradeEntryPrice - low
+    bestFavorable := math.max(bestFavorable, favorable)
+    if useBreakEven and not tradeStrict and not breakEvenArmed and bestFavorable >= breakEvenTriggerPoints
+        breakEvenArmed := true
+    if breakEvenArmed and not tradeStrict
+        tradeStop := tradeDirection == market.DIR_LONG ? math.max(tradeStop, tradeEntryPrice) : math.min(tradeStop, tradeEntryPrice)
+    strategy.exit("SLTP", from_entry = "ENIGMA", stop = tradeStop, limit = tradeTarget, comment_profit = "TP", comment_loss = "SL")
+
+    bool controllerDisrespected = tradeFamily != market.FAMILY_BGOB and market.bodyCloseInvalidates(tradeDirection, tradeInvalidation, close)
+    if controllerDisrespected and not exitRequestedThisBar
+        strategy.close("ENIGMA", comment = tradeFamily == market.FAMILY_PRIMARY_OB ? "OB_DISRESPECT" : tradeFamily == market.FAMILY_PRIOR_FPI ? "FPI_DISRESPECT" : "IMB_DISRESPECT")
+        exitRequestedThisBar := true
+
+    // A Judas position cannot survive the first recovery FPI. Delivery positions
+    // ignore counter-direction one-minute noise and remain governed by their active
+    // OB / IMB / BGOB controller until the next decision session builds a fresh
+    // opposite delivery foundation.
+    if tradePhase == PHASE_JUDAS and campaignPhase != PHASE_JUDAS and not exitRequestedThisBar
+        strategy.close("ENIGMA", comment = "JUDAS_ALIGNMENT_EXIT")
+        exitRequestedThisBar := true
+
+    if forceFlat and nowMinute >= forceFlatAt and not exitRequestedThisBar
+        strategy.close("ENIGMA", comment = "FORCE_FLAT")
+        exitRequestedThisBar := true
+
+// =============================================================================
+// Audit / data-window outputs
+// =============================================================================
+string stateText = "Session " + sessionName(currentDecisionSession) + "\nBias " + market.sideText(structuralBias) + "\nPhase " + phaseText(campaignPhase)
+stateText := stateText + "\nSession FPI " + (sessionFpiFound ? priceText(sessionFpi.bottom) + "-" + priceText(sessionFpi.top) : "WAIT")
+stateText := stateText + "\nDisrespect " + (sessionFpiDisrespected ? "YES" : "NO")
+stateText := stateText + "\nRecovery " + recoveryReason
+stateText := stateText + "\nMacro " + (macroFpiFound ? market.sideText(macroFpi.direction) + (macroCounterConfirmed ? " / COUNTER " + market.sideText(macroCounterDirection) : macroDirectConfirmed ? " / RETESTED" : " / PENDING") : "WAIT " + clockText(macroStart))
+stateText := stateText + "\nORB " + (enableOrbSafeguard ? orbBreakDirection == market.DIR_NONE ? "LOGIC / WAIT" : market.sideText(orbBreakDirection) : "OFF")
+stateText := stateText + "\nTrade " + (tradeActive ? market.sideText(tradeDirection) + " " + market.familyText(tradeFamily) : "FLAT")
+
+if showAuditLabel and barstate.islast
+    if not na(auditLabel)
+        label.delete(auditLabel)
+    float auditY = high + math.max(syminfo.mintick * 30, (high - low) * 2.0)
+    auditLabel := label.new(bar_index + 3, auditY, stateText, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color.new(color.black, 15), textcolor = color.white, size = size.small)
+
+plot(sessionFpiFound ? structuralBias : na, "Structural Session Bias", display = display.data_window)
+plot(campaignPhase, "Campaign Phase", display = display.data_window)
+plot(sessionFpiDisrespected ? 1 : 0, "Session FPI Disrespected", display = display.data_window)
+plot(recoveryWindow, "Recovery 30m Window", display = display.data_window)
+plot(macroFpiFound ? macroFpi.direction : na, "First Macro FPI Direction", display = display.data_window)
+plot(macroCounterConfirmed ? macroCounterDirection : na, "Macro Counter Confirmed", display = display.data_window)
+plot(enableOrbSafeguard and orbLocked ? orbHigh : na, "ORB High", display = display.data_window)
+plot(enableOrbSafeguard and orbLocked ? orbLow : na, "ORB Low", display = display.data_window)
+plot(tradeActive ? tradeDirection : 0, "Active Trade Direction", display = display.data_window)
+plot(tradeActive ? tradeStop : na, "Active Stop", display = display.data_window)
+plot(tradeActive ? tradeTarget : na, "Active Target", display = display.data_window)
+
+alertcondition(tradeActive and tradeEntryBar == bar_index and tradeDirection == market.DIR_LONG, "PO3 MMXM Buy Order", "PO3 MMXM Enigma BUY ORDER")
+alertcondition(tradeActive and tradeEntryBar == bar_index and tradeDirection == market.DIR_SHORT, "PO3 MMXM Sell Order", "PO3 MMXM Enigma SELL ORDER")
