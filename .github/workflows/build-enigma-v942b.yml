@@ -1,0 +1,150 @@
+name: Build Enigma V9.4.2 Retry
+
+on:
+  push:
+    branches:
+      - enigma-v9-3-window-narrative
+    paths:
+      - .github/workflows/build-enigma-v942b.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Build complete corrected strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          src = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_1_Sequenced_Judas_Delivery_Hold.pine')
+          dst = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_2_Irreversible_IMB_Lifecycle.pine')
+          wf1 = Path('.github/workflows/build-enigma-v942.yml')
+          wf2 = Path('.github/workflows/build-enigma-v942b.yml')
+          text = src.read_text(encoding='utf-8')
+
+          replacements = {
+              '"PO3 MMXM Enigma V9.4.1 Sequenced Judas Delivery Hold"': '"PO3 MMXM Enigma V9.4.2 Irreversible IMB Lifecycle"',
+              'shorttitle = "PO3E941H"': 'shorttitle = "PO3E942I"',
+              'bool causal = source.active and foundation.active and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and not na(source.breakBar)': 'bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED\n    bool causal = sourceLive and foundation.active and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and not na(source.breakBar)',
+              'bool replace = causal and (not target.active or moreExtreme(source.top, source.bottom, target.top, target.bottom, direction))': 'bool replace = causal and (not target.active or target.status == market.STATUS_INVALID or moreExtreme(source.top, source.bottom, target.top, target.bottom, direction))',
+              'if recoveryWindowEligible and recoveryFoundation.active and recoverySupport.active and not windowResolved': 'if recoveryWindowEligible and recoveryFoundation.active and recoverySupport.active and recoverySupport.status == market.STATUS_ARMED and not windowResolved',
+              'else if judasSupport.active\n            int judasEligibleAfter': 'else if judasSupport.active and judasSupport.status == market.STATUS_ARMED\n            int judasEligibleAfter',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise RuntimeError(f'missing replacement anchor: {old[:90]}')
+              text = text.replace(old, new, 1)
+
+          helper_anchor = '''boundedStop(int direction, float entryPrice, float structuralInvalidation) =>'''
+          helper_insert = '''permanentlyInvalidateImb(structure) =>
+    structure.status := market.STATUS_INVALID
+    structure.active := false
+    structure.used := true
+    structure.touching := false
+    structure.confirmBar := na
+    0
+
+sameImbInstance(first, second) =>
+    first.active and second.active and first.sourceBar == second.sourceBar and first.sourceTime == second.sourceTime and first.sourceWindow == second.sourceWindow
+
+boundedStop(int direction, float entryPrice, float structuralInvalidation) =>'''
+          if helper_anchor not in text:
+              raise RuntimeError('missing helper anchor')
+          text = text.replace(helper_anchor, helper_insert, 1)
+
+          selection_anchor = '''// =============================================================================
+// Signal selection
+// =============================================================================
+selectedSignal = market.newSignal()'''
+          lifecycle = '''// =============================================================================
+// Irreversible IMB lifecycle
+// =============================================================================
+// A bullish IMB is permanently disrespected by a body close below its bottom.
+// A bearish IMB is permanently disrespected by a body close above its top.
+// The first such close may complete an already armed opposing-direction reclaim
+// on that same candle. Otherwise the source IMB and every bound copy are killed.
+bool bullImbDisrespectedNow = bullImbCandidate.active and bullImbCandidate.status == market.STATUS_ARMED and bar_index > nz(bullImbCandidate.breakBar, bullImbCandidate.sourceBar) and close < bullImbCandidate.bottom
+bool bearImbDisrespectedNow = bearImbCandidate.active and bearImbCandidate.status == market.STATUS_ARMED and bar_index > nz(bearImbCandidate.breakBar, bearImbCandidate.sourceBar) and close > bearImbCandidate.top
+
+bool recoveryUsesBullImb = sameImbInstance(recoverySupport, bullImbCandidate)
+bool recoveryUsesBearImb = sameImbInstance(recoverySupport, bearImbCandidate)
+bool judasUsesBullImb = sameImbInstance(judasSupport, bullImbCandidate)
+bool judasUsesBearImb = sameImbInstance(judasSupport, bearImbCandidate)
+
+if bullImbDisrespectedNow
+    bool recoveryConsumedBullNow = recoveryUsesBullImb and recoverySignal.valid
+    bool judasConsumedBullNow = judasUsesBullImb and judasSequenceSignal.valid
+    if recoveryUsesBullImb and not recoveryConsumedBullNow
+        permanentlyInvalidateImb(recoverySupport)
+        recoverySupportConfirmBar := na
+    if judasUsesBullImb and not judasConsumedBullNow
+        permanentlyInvalidateImb(judasSupport)
+        judasSupportConfirmBar := na
+    permanentlyInvalidateImb(bullImbCandidate)
+
+if bearImbDisrespectedNow
+    bool recoveryConsumedBearNow = recoveryUsesBearImb and recoverySignal.valid
+    bool judasConsumedBearNow = judasUsesBearImb and judasSequenceSignal.valid
+    if recoveryUsesBearImb and not recoveryConsumedBearNow
+        permanentlyInvalidateImb(recoverySupport)
+        recoverySupportConfirmBar := na
+    if judasUsesBearImb and not judasConsumedBearNow
+        permanentlyInvalidateImb(judasSupport)
+        judasSupportConfirmBar := na
+    permanentlyInvalidateImb(bearImbCandidate)
+
+if recoveryFoundation.active and not recoverySupport.active and windowState == WINDOW_IMB_ARMED
+    windowState := WINDOW_FOUNDATION_CONFIRMED
+
+// =============================================================================
+// Signal selection
+// =============================================================================
+selectedSignal = market.newSignal()'''
+          if selection_anchor not in text:
+              raise RuntimeError('missing selection anchor')
+          text = text.replace(selection_anchor, lifecycle, 1)
+
+          diag_anchor = 'plot(judasSupportConfirmBar, "Judas Bound IMB Confirm Bar", display = display.data_window)'
+          diag_new = '''plot(judasSupportConfirmBar, "Judas Bound IMB Confirm Bar", display = display.data_window)
+plot(bullImbCandidate.status, "Bull IMB Lifecycle Status", display = display.data_window)
+plot(bearImbCandidate.status, "Bear IMB Lifecycle Status", display = display.data_window)'''
+          if diag_anchor not in text:
+              raise RuntimeError('missing diagnostic anchor')
+          text = text.replace(diag_anchor, diag_new, 1)
+
+          checks = [
+              'shorttitle = "PO3E942I"',
+              'bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED',
+              'permanentlyInvalidateImb',
+              'bullImbDisrespectedNow',
+              'bearImbDisrespectedNow',
+              'recoverySupport.status == market.STATUS_ARMED',
+              'judasSupport.status == market.STATUS_ARMED',
+          ]
+          for check in checks:
+              if check not in text:
+                  raise RuntimeError(f'patch check failed: {check}')
+
+          dst.write_text(text, encoding='utf-8')
+          if wf1.exists():
+              wf1.unlink()
+          wf2.unlink()
+          PY
+
+      - name: Commit generated strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add V9.4.2 irreversible IMB lifecycle"
+          git push origin HEAD:enigma-v9-3-window-narrative
