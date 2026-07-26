@@ -1,0 +1,197 @@
+name: Build Enigma V9.3.8 Once
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-enigma-v938-main.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build corrected strategy on development branch
+        shell: bash
+        run: |
+          git fetch origin enigma-v9-3-window-narrative
+          git checkout enigma-v9-3-window-narrative
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_3_7_Persistent_Window_Narrative.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_3_8_Persistent_OB_IMB_Handoff.pine')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.3.7 Persistent Window Narrative",\n    shorttitle = "PO3E937N",',
+              '"PO3 MMXM Enigma V9.3.8 Persistent OB IMB Handoff",\n    shorttitle = "PO3E938H",'
+          )
+
+          text = text.replace(
+              'bool relationshipValid = structure.active and foundation.active and structure.direction == targetDirection and foundation.direction == targetDirection and structure.sourceWindow == requiredWindow and foundation.sourceWindow == requiredWindow and actualWindowFromTimestamp(structure.sourceTime) == requiredWindow and actualWindowFromTimestamp(foundation.sourceTime) == requiredWindow and structure.parentId == foundation.sourceBar and structure.sourceBar >= foundation.sourceBar and not na(structure.breakBar) and structure.breakBar >= foundationConfirmBar and bar_index > structure.breakBar',
+              'bool relationshipValid = structure.active and foundation.active and structure.direction == targetDirection and foundation.direction == targetDirection and structure.sourceWindow == requiredWindow and foundation.sourceWindow == requiredWindow and actualWindowFromTimestamp(structure.sourceTime) == requiredWindow and actualWindowFromTimestamp(foundation.sourceTime) == requiredWindow and structure.parentId == foundation.sourceBar and structure.sourceBar >= foundation.sourceBar and not na(structure.breakBar) and bar_index > structure.breakBar and bar_index > foundationConfirmBar',
+              1
+          )
+
+          old_candidate = '''        if enableImb
+              candidateImb = market.structureFromFpi(fpiEvent, market.FAMILY_IMB_RETEST, fpiEvent.direction == market.DIR_LONG ? "IMB-BULL-01" : "IMB-BEAR-01", fpiEvent.direction == market.DIR_LONG ? "BULL_IMB" : "BEAR_IMB")
+              targetImb = fpiEvent.direction == market.DIR_LONG ? array.get(windowBullImb, w) : array.get(windowBearImb, w)
+              if armMoreExtreme(targetImb, candidateImb, fpiEvent.direction) and drawStructureBoxes'''
+          new_candidate = '''        if enableImb
+              candidateImb = market.structureFromFpi(fpiEvent, market.FAMILY_IMB_RETEST, fpiEvent.direction == market.DIR_LONG ? "IMB-BULL-01" : "IMB-BEAR-01", fpiEvent.direction == market.DIR_LONG ? "BULL_IMB" : "BEAR_IMB")
+              // Persist the completed three-candle IMB formation bar so a later
+              // OB/BOLO confirmation can bind the displacement-created IMB.
+              candidateImb.breakBar := bar_index
+              candidateImb.status := market.STATUS_ARMED
+              candidateImb.touching := false
+              targetImb = fpiEvent.direction == market.DIR_LONG ? array.get(windowBullImb, w) : array.get(windowBearImb, w)
+              if armMoreExtreme(targetImb, candidateImb, fpiEvent.direction) and drawStructureBoxes'''
+          if old_candidate not in text:
+              raise RuntimeError('IMB persistence anchor not found')
+          text = text.replace(old_candidate, new_candidate, 1)
+
+          old_freeze = '''            array.set(reversalFoundationBar, currentWindow, bar_index)
+                  array.set(reversalDirection, currentWindow, structuralDirection)
+                  array.set(reversalSupport, currentWindow, market.newStructure())
+                  array.set(reversalSupportBar, currentWindow, na)
+                  array.set(winState, currentWindow, WIN_WAIT_IMB)'''
+          new_freeze = '''            array.set(reversalFoundationBar, currentWindow, bar_index)
+                  array.set(reversalDirection, currentWindow, structuralDirection)
+                  array.set(reversalSupport, currentWindow, market.newStructure())
+                  array.set(reversalSupportBar, currentWindow, na)
+                  array.set(winState, currentWindow, WIN_WAIT_IMB)
+
+                  // Bind an IMB already created by the displacement that produced
+                  // or validated this exact current-window OB/BOLO. Either an
+                  // aligned IMB or an opposing IMB reclaimed toward Session FPI
+                  // can confirm, but it must originate after the foundation source.
+                  alignedStoredImb = structuralDirection == market.DIR_LONG ? array.get(windowBullImb, currentWindow) : array.get(windowBearImb, currentWindow)
+                  opposingStoredImb = structuralDirection == market.DIR_LONG ? array.get(windowBearImb, currentWindow) : array.get(windowBullImb, currentWindow)
+                  strictTarget = array.get(reversalSupport, currentWindow)
+
+                  bool alignedStoredValid = alignedStoredImb.active and alignedStoredImb.sourceWindow == currentWindow and actualWindowFromTimestamp(alignedStoredImb.sourceTime) == currentWindow and alignedStoredImb.sourceBar >= strictFoundation.sourceBar and not na(alignedStoredImb.breakBar)
+                  if alignedStoredValid
+                      alignedBound = market.newStructure()
+                      copyStructure(alignedBound, alignedStoredImb)
+                      alignedBound.direction := structuralDirection
+                      alignedBound.family := market.FAMILY_POST_OB_IMB
+                      alignedBound.parentId := strictFoundation.sourceBar
+                      alignedBound.sourceWindow := currentWindow
+                      alignedBound.invalidation := structuralDirection == market.DIR_LONG ? alignedBound.bottom : alignedBound.top
+                      alignedBound.status := market.STATUS_ARMED
+                      alignedBound.confirmBar := na
+                      alignedBound.touching := false
+                      armMoreExtreme(strictTarget, alignedBound, structuralDirection)
+
+                  bool opposingStoredValid = opposingStoredImb.active and opposingStoredImb.sourceWindow == currentWindow and actualWindowFromTimestamp(opposingStoredImb.sourceTime) == currentWindow and opposingStoredImb.sourceBar >= strictFoundation.sourceBar and not na(opposingStoredImb.breakBar)
+                  if opposingStoredValid
+                      opposingBound = market.newStructure()
+                      copyStructure(opposingBound, opposingStoredImb)
+                      opposingBound.direction := structuralDirection
+                      opposingBound.family := market.FAMILY_POST_OB_IMB
+                      opposingBound.parentId := strictFoundation.sourceBar
+                      opposingBound.sourceWindow := currentWindow
+                      opposingBound.invalidation := structuralDirection == market.DIR_LONG ? opposingBound.bottom : opposingBound.top
+                      opposingBound.status := market.STATUS_ARMED
+                      opposingBound.confirmBar := na
+                      opposingBound.touching := false
+                      armMoreExtreme(strictTarget, opposingBound, structuralDirection)
+
+                  if strictTarget.active
+                      array.set(winState, currentWindow, WIN_IMB_ARMED)'''
+          if old_freeze not in text:
+              raise RuntimeError('foundation freeze anchor not found')
+          text = text.replace(old_freeze, new_freeze, 1)
+
+          old_future = '''if laterThanJudas and strictFpiWhollyCurrentWindow and fpiEvent.direction == structuralDirection
+              strictFoundation = array.get(reversalFoundation, currentWindow)
+              int strictFoundationConfirmBar = array.get(reversalFoundationBar, currentWindow)
+              int strictDirection = array.get(reversalDirection, currentWindow)
+              bool foundationReady = strictFoundation.active and strictFoundation.sourceWindow == currentWindow and actualWindowFromTimestamp(strictFoundation.sourceTime) == currentWindow and strictDirection == structuralDirection and not na(strictFoundationConfirmBar)
+              bool fpiBelongsToFoundation = foundationReady and fpiEvent.sourceBar >= strictFoundation.sourceBar and bar_index >= strictFoundationConfirmBar
+              if enableImb and fpiBelongsToFoundation
+                  strictCandidate = market.structureFromFpi(fpiEvent, market.FAMILY_POST_OB_IMB, strictDirection == market.DIR_LONG ? "BOUND-IMB-BULL-01" : "BOUND-IMB-BEAR-01", "CURRENT_WINDOW_IMB_BOUND_TO_BOLO")
+                  strictCandidate.direction := strictDirection
+                  strictCandidate.parentId := strictFoundation.sourceBar
+                  strictCandidate.sourceWindow := currentWindow
+                  strictCandidate.breakBar := bar_index
+                  strictCandidate.status := market.STATUS_ARMED
+                  strictCandidate.touching := false
+                  strictTarget = array.get(reversalSupport, currentWindow)
+                  if armMoreExtreme(strictTarget, strictCandidate, strictDirection)
+                      strictTarget.direction := strictDirection
+                      strictTarget.parentId := strictFoundation.sourceBar
+                      strictTarget.sourceWindow := currentWindow
+                      strictTarget.breakBar := bar_index
+                      array.set(reversalSupportBar, currentWindow, na)
+                      array.set(winState, currentWindow, WIN_IMB_ARMED)'''
+          new_future = '''if laterThanJudas and strictFpiWhollyCurrentWindow
+              strictFoundation = array.get(reversalFoundation, currentWindow)
+              int strictFoundationConfirmBar = array.get(reversalFoundationBar, currentWindow)
+              int strictDirection = array.get(reversalDirection, currentWindow)
+              bool foundationReady = strictFoundation.active and strictFoundation.sourceWindow == currentWindow and actualWindowFromTimestamp(strictFoundation.sourceTime) == currentWindow and strictDirection == structuralDirection and not na(strictFoundationConfirmBar)
+              bool fpiBelongsToFoundation = foundationReady and fpiEvent.sourceBar >= strictFoundation.sourceBar and bar_index >= strictFoundationConfirmBar
+              if enableImb and fpiBelongsToFoundation
+                  // Same-direction IMBs are respected; opposite-direction IMBs are
+                  // reclaimed through the far edge. Both bind to the exact OB/BOLO.
+                  strictCandidate = market.structureFromFpi(fpiEvent, market.FAMILY_POST_OB_IMB, strictDirection == market.DIR_LONG ? "BOUND-IMB-BULL-01" : "BOUND-IMB-BEAR-01", fpiEvent.direction == strictDirection ? "ALIGNED_IMB_BOUND_TO_OB_BOLO" : "OPPOSING_IMB_RECLAIM_BOUND_TO_OB_BOLO")
+                  strictCandidate.direction := strictDirection
+                  strictCandidate.parentId := strictFoundation.sourceBar
+                  strictCandidate.sourceWindow := currentWindow
+                  strictCandidate.breakBar := bar_index
+                  strictCandidate.invalidation := strictDirection == market.DIR_LONG ? strictCandidate.bottom : strictCandidate.top
+                  strictCandidate.status := market.STATUS_ARMED
+                  strictCandidate.touching := false
+                  strictTarget = array.get(reversalSupport, currentWindow)
+                  if armMoreExtreme(strictTarget, strictCandidate, strictDirection)
+                      strictTarget.direction := strictDirection
+                      strictTarget.parentId := strictFoundation.sourceBar
+                      strictTarget.sourceWindow := currentWindow
+                      strictTarget.breakBar := bar_index
+                      strictTarget.invalidation := strictDirection == market.DIR_LONG ? strictTarget.bottom : strictTarget.top
+                      array.set(reversalSupportBar, currentWindow, na)
+                      array.set(winState, currentWindow, WIN_IMB_ARMED)'''
+          if old_future not in text:
+              raise RuntimeError('future IMB binding anchor not found')
+          text = text.replace(old_future, new_future, 1)
+
+          text = text.replace(
+              'strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar >= strictFoundation.sourceBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and strictSupport.breakBar >= strictFoundationConfirmBar and strictSupport.confirmBar > strictSupport.breakBar and strictSupportConfirmBar == bar_index',
+              'strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar >= strictFoundation.sourceBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and not na(strictSupport.breakBar) and strictSupport.confirmBar > strictSupport.breakBar and strictSupport.confirmBar > strictFoundationConfirmBar and strictSupportConfirmBar == bar_index',
+              1
+          )
+
+          text = text.replace(
+              '"PERSISTENT_SESSION_FPI_CURRENT_WINDOW_OB_BOLO_IMB_RECOVERY"',
+              '"PERSISTENT_OB_BOLO_THEN_STORED_OR_NEW_IMB_RETEST_RECOVERY"',
+              1
+          )
+
+          required = [
+              'shorttitle = "PO3E938H"',
+              'candidateImb.breakBar := bar_index',
+              'alignedStoredImb',
+              'opposingStoredImb',
+              'strictSupport.confirmBar > strictFoundationConfirmBar',
+              'PERSISTENT_OB_BOLO_THEN_STORED_OR_NEW_IMB_RETEST_RECOVERY'
+          ]
+          for item in required:
+              if item not in text:
+                  raise RuntimeError(f'missing required patch: {item}')
+
+          target.write_text(text, encoding='utf-8')
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_3_8_Persistent_OB_IMB_Handoff.pine
+          git commit -m "Add V9.3.8 persistent OB BOLO and IMB handoff"
+          git push origin HEAD:enigma-v9-3-window-narrative
