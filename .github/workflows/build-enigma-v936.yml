@@ -1,0 +1,96 @@
+name: Build Enigma V9.3.6
+
+on:
+  push:
+    branches:
+      - enigma-v9-3-window-narrative
+    paths:
+      - .github/workflows/build-enigma-v936.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Create corrected full Pine strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_3_5_Strict_Window_Provenance.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_3_6_Causal_BOLO_IMB_Handoff.pine')
+          workflow = Path('.github/workflows/build-enigma-v936.yml')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.3.5 Strict Window Provenance",\n    shorttitle = "PO3E935W",',
+              '"PO3 MMXM Enigma V9.3.6 Causal BOLO IMB Handoff",\n    shorttitle = "PO3E936C",'
+          )
+
+          old_relationship = 'bool relationshipValid = structure.active and foundation.active and structure.direction == targetDirection and foundation.direction == targetDirection and structure.sourceWindow == requiredWindow and foundation.sourceWindow == requiredWindow and actualWindowFromTimestamp(structure.sourceTime) == requiredWindow and actualWindowFromTimestamp(foundation.sourceTime) == requiredWindow and structure.parentId == foundation.sourceBar and structure.sourceBar > foundationConfirmBar and not na(structure.breakBar) and structure.breakBar > foundationConfirmBar and bar_index > structure.breakBar'
+          new_relationship = 'bool relationshipValid = structure.active and foundation.active and structure.direction == targetDirection and foundation.direction == targetDirection and structure.sourceWindow == requiredWindow and foundation.sourceWindow == requiredWindow and actualWindowFromTimestamp(structure.sourceTime) == requiredWindow and actualWindowFromTimestamp(foundation.sourceTime) == requiredWindow and structure.parentId == foundation.sourceBar and structure.sourceBar > foundation.sourceBar and not na(structure.breakBar) and structure.breakBar >= foundationConfirmBar and bar_index > math.max(structure.breakBar, foundationConfirmBar)'
+          if old_relationship not in text:
+              raise RuntimeError('bound IMB relationship anchor not found')
+          text = text.replace(old_relationship, new_relationship, 1)
+
+          old_comment = '''// The strict support IMB must be created after the BOLO retest/close confirmation.
+          // A boundary-crossing FPI, an older IMB, or the BOLO's own confirmation event
+          // cannot be recycled to authorize the reversal.'''
+          new_comment = '''// The strict support IMB must be causally downstream from the BOLO source.
+          // The displacement that confirms the BOLO may also create the IMB, but entry
+          // still requires a later retest and directional close. Older, unrelated, or
+          // boundary-crossing IMBs remain prohibited.'''
+          if old_comment not in text:
+              raise RuntimeError('strict support comment anchor not found')
+          text = text.replace(old_comment, new_comment, 1)
+
+          old_belongs = 'bool fpiBelongsToFoundation = foundationReady and fpiEvent.sourceBar > strictFoundationConfirmBar and bar_index > strictFoundationConfirmBar'
+          new_belongs = 'bool fpiBelongsToFoundation = foundationReady and fpiEvent.sourceBar > strictFoundation.sourceBar and bar_index >= strictFoundationConfirmBar'
+          if old_belongs not in text:
+              raise RuntimeError('strict support formation anchor not found')
+          text = text.replace(old_belongs, new_belongs, 1)
+
+          old_exact = 'strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar > strictFoundationConfirmBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and strictSupport.breakBar > strictFoundationConfirmBar and strictSupport.confirmBar > strictSupport.breakBar and strictSupportConfirmBar == bar_index'
+          new_exact = 'strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar > strictFoundation.sourceBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and strictSupport.breakBar >= strictFoundationConfirmBar and strictSupport.confirmBar > math.max(strictSupport.breakBar, strictFoundationConfirmBar) and strictSupportConfirmBar == bar_index'
+          if old_exact not in text:
+              raise RuntimeError('exact relationship anchor not found')
+          text = text.replace(old_exact, new_exact, 1)
+
+          text = text.replace(
+              '"ACTUAL_CURRENT_WINDOW_BOLO_THEN_NEW_IMB_RETEST_RESPECT"',
+              '"CURRENT_WINDOW_BOLO_CAUSAL_IMB_LATER_RETEST_RESPECT"',
+              1
+          )
+
+          required = [
+              'shorttitle = "PO3E936C"',
+              'structure.sourceBar > foundation.sourceBar',
+              'structure.breakBar >= foundationConfirmBar',
+              'fpiEvent.sourceBar > strictFoundation.sourceBar',
+              'bar_index >= strictFoundationConfirmBar',
+              'strictSupport.confirmBar > math.max(strictSupport.breakBar, strictFoundationConfirmBar)'
+          ]
+          for item in required:
+              if item not in text:
+                  raise RuntimeError(f'missing required patch: {item}')
+
+          target.write_text(text, encoding='utf-8')
+          workflow.unlink()
+          PY
+
+      - name: Commit generated strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add V9.3.6 causal BOLO to IMB handoff"
+          git push origin HEAD:enigma-v9-3-window-narrative
