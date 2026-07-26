@@ -6,6 +6,9 @@ on:
       - main
     paths:
       - .github/workflows/build-enigma-v935-main-trigger.yml
+  pull_request:
+    types:
+      - opened
 
 permissions:
   contents: write
