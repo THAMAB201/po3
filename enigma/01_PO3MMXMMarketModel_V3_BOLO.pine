@@ -1,0 +1,472 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © SunovaBeach
+//@version=6
+// @description Deterministic one-minute market-structure model for PO3 MMXM Enigma. V3 adds body-defined BOLO order blocks and extreme-series selection.
+library("PO3MMXMMarketModel", overlay = false)
+
+// -----------------------------------------------------------------------------
+// Stable constants. This library has no hidden dependencies and no inputs.
+// -----------------------------------------------------------------------------
+export const string TZ = "America/New_York"
+
+export const int DIR_NONE  = 0
+export const int DIR_LONG  = 1
+export const int DIR_SHORT = -1
+
+export const int FAMILY_NONE              = 0
+export const int FAMILY_PRIMARY_OB        = 1
+export const int FAMILY_POST_OB_IMB       = 2
+export const int FAMILY_BGOB              = 3
+export const int FAMILY_IMB_RETEST        = 4
+export const int FAMILY_OPENING_945_FLIP  = 5
+export const int FAMILY_30M_REVERSAL      = 6
+export const int FAMILY_POST_MACRO_RETURN = 7
+export const int FAMILY_PRIOR_FPI         = 8
+
+export const int STATUS_EMPTY     = 0
+export const int STATUS_ARMED     = 1
+export const int STATUS_BROKEN    = 2
+export const int STATUS_CONFIRMED = 3
+export const int STATUS_INVALID   = -1
+
+export const int LOCATION_BELOW  = -1
+export const int LOCATION_INSIDE = 0
+export const int LOCATION_ABOVE  = 1
+
+export const int SESSION_OPEN_MINUTE   = 570
+export const int OPENING_CUTOFF_MINUTE = 585
+export const int MACRO_START_MINUTE     = 590
+export const int MACRO_END_MINUTE       = 610
+export const int SESSION_END_MINUTE     = 1020
+export const int PERIOD_MINUTES         = 30
+export const int LAST_WINDOW_ID         = 14
+
+// -----------------------------------------------------------------------------
+// Shared objects.
+// -----------------------------------------------------------------------------
+export type FpiEvent
+    bool valid = false
+    int direction = 0
+    float top = na
+    float bottom = na
+    int sourceBar = na
+    int sourceTime = na
+    int sourceWindow = -1
+    int middleMinute = -1
+    float thirdHigh = na
+    float thirdLow = na
+
+export type Structure
+    bool active = false
+    bool used = false
+    int direction = 0
+    int family = 0
+    float top = na
+    float bottom = na
+    float bodyTop = na
+    float bodyBottom = na
+    float invalidation = na
+    int sourceBar = na
+    int sourceTime = na
+    int sourceWindow = -1
+    int parentId = -1
+    int status = 0
+    int breakBar = na
+    int confirmBar = na
+    int retestCount = 0
+    bool touching = false
+    string ruleId = ""
+    string reason = ""
+
+export type Signal
+    bool valid = false
+    int direction = 0
+    int family = 0
+    float top = na
+    float bottom = na
+    float invalidation = na
+    int sourceBar = na
+    int sourceTime = na
+    int sourceWindow = -1
+    int parentId = -1
+    bool strictHold = false
+    bool protocolOverride = false
+    string ruleId = ""
+    string reason = "WAIT"
+
+// -----------------------------------------------------------------------------
+// Constructors and copying.
+// -----------------------------------------------------------------------------
+export newFpiEvent() => FpiEvent.new()
+export newStructure() => Structure.new()
+export newSignal() => Signal.new()
+
+export copyStructure(Structure source) =>
+    Structure.new(
+         active = source.active,
+         used = source.used,
+         direction = source.direction,
+         family = source.family,
+         top = source.top,
+         bottom = source.bottom,
+         bodyTop = source.bodyTop,
+         bodyBottom = source.bodyBottom,
+         invalidation = source.invalidation,
+         sourceBar = source.sourceBar,
+         sourceTime = source.sourceTime,
+         sourceWindow = source.sourceWindow,
+         parentId = source.parentId,
+         status = source.status,
+         breakBar = source.breakBar,
+         confirmBar = source.confirmBar,
+         retestCount = source.retestCount,
+         touching = source.touching,
+         ruleId = source.ruleId,
+         reason = source.reason
+    )
+
+export copySignal(Signal source) =>
+    Signal.new(
+         valid = source.valid,
+         direction = source.direction,
+         family = source.family,
+         top = source.top,
+         bottom = source.bottom,
+         invalidation = source.invalidation,
+         sourceBar = source.sourceBar,
+         sourceTime = source.sourceTime,
+         sourceWindow = source.sourceWindow,
+         parentId = source.parentId,
+         strictHold = source.strictHold,
+         protocolOverride = source.protocolOverride,
+         ruleId = source.ruleId,
+         reason = source.reason
+    )
+
+export clearStructure(Structure structure) =>
+    structure.active := false
+    structure.used := false
+    structure.direction := DIR_NONE
+    structure.family := FAMILY_NONE
+    structure.top := na
+    structure.bottom := na
+    structure.bodyTop := na
+    structure.bodyBottom := na
+    structure.invalidation := na
+    structure.sourceBar := na
+    structure.sourceTime := na
+    structure.sourceWindow := -1
+    structure.parentId := -1
+    structure.status := STATUS_EMPTY
+    structure.breakBar := na
+    structure.confirmBar := na
+    structure.retestCount := 0
+    structure.touching := false
+    structure.ruleId := ""
+    structure.reason := ""
+    0
+
+export setStructure(
+     Structure structure,
+     int direction,
+     int family,
+     float top,
+     float bottom,
+     float bodyTop,
+     float bodyBottom,
+     float invalidation,
+     int sourceBar,
+     int sourceTime,
+     int sourceWindow,
+     int parentId,
+     int status,
+     string ruleId,
+     string reason
+) =>
+    structure.active := true
+    structure.used := false
+    structure.direction := direction
+    structure.family := family
+    structure.top := top
+    structure.bottom := bottom
+    structure.bodyTop := bodyTop
+    structure.bodyBottom := bodyBottom
+    structure.invalidation := invalidation
+    structure.sourceBar := sourceBar
+    structure.sourceTime := sourceTime
+    structure.sourceWindow := sourceWindow
+    structure.parentId := parentId
+    structure.status := status
+    structure.breakBar := na
+    structure.confirmBar := na
+    structure.retestCount := 0
+    structure.touching := false
+    structure.ruleId := ruleId
+    structure.reason := reason
+    0
+
+export makeSignal(
+     int direction,
+     int family,
+     float top,
+     float bottom,
+     float invalidation,
+     int sourceBar,
+     int sourceTime,
+     int sourceWindow,
+     int parentId,
+     bool strictHold,
+     bool protocolOverride,
+     string ruleId,
+     string reason
+) =>
+    Signal.new(
+         valid = direction != DIR_NONE,
+         direction = direction,
+         family = family,
+         top = top,
+         bottom = bottom,
+         invalidation = invalidation,
+         sourceBar = sourceBar,
+         sourceTime = sourceTime,
+         sourceWindow = sourceWindow,
+         parentId = parentId,
+         strictHold = strictHold,
+         protocolOverride = protocolOverride,
+         ruleId = ruleId,
+         reason = reason
+    )
+
+export signalFromStructure(
+     Structure structure,
+     int family,
+     bool strictHold,
+     bool protocolOverride,
+     string ruleId,
+     string reason
+) =>
+    makeSignal(
+         structure.direction,
+         family,
+         structure.top,
+         structure.bottom,
+         structure.invalidation,
+         structure.sourceBar,
+         structure.sourceTime,
+         structure.sourceWindow,
+         structure.parentId,
+         strictHold,
+         protocolOverride,
+         ruleId,
+         reason
+    )
+
+// -----------------------------------------------------------------------------
+// Time model.
+// -----------------------------------------------------------------------------
+export minuteOfDay(simple int offset) =>
+    hour(time[offset], TZ) * 60 + minute(time[offset], TZ)
+
+export windowFromMinute(int minuteValue) =>
+    minuteValue >= SESSION_OPEN_MINUTE and minuteValue < SESSION_END_MINUTE ?
+     int(math.floor((minuteValue - SESSION_OPEN_MINUTE) / float(PERIOD_MINUTES))) : -1
+
+export periodStartMinute(int windowId) => SESSION_OPEN_MINUTE + windowId * PERIOD_MINUTES
+export periodEndMinute(int windowId) => math.min(SESSION_END_MINUTE, periodStartMinute(windowId) + PERIOD_MINUTES)
+export inNySession(int minuteValue) => minuteValue >= SESSION_OPEN_MINUTE and minuteValue < SESSION_END_MINUTE
+export inMacroWindow(int minuteValue) => minuteValue >= MACRO_START_MINUTE and minuteValue < MACRO_END_MINUTE
+
+// -----------------------------------------------------------------------------
+// Price tests.
+// -----------------------------------------------------------------------------
+export overlaps(float top, float bottom, float barHigh, float barLow) =>
+    not na(top) and not na(bottom) and barHigh >= bottom and barLow <= top
+
+export midpoint(float top, float bottom) =>
+    not na(top) and not na(bottom) ? (top + bottom) / 2.0 : na
+
+export directionalClose(int direction, float top, float bottom, float closeValue) =>
+    direction == DIR_LONG ? closeValue > top : direction == DIR_SHORT ? closeValue < bottom : false
+
+export bodyCloseInvalidates(int direction, float invalidation, float closeValue) =>
+    direction == DIR_LONG ? closeValue < invalidation : direction == DIR_SHORT ? closeValue > invalidation : false
+
+export zoneLocation(float closeValue, float top, float bottom) =>
+    closeValue > top ? LOCATION_ABOVE : closeValue < bottom ? LOCATION_BELOW : LOCATION_INSIDE
+
+export isMoreExtreme(int direction, float candidateTop, float candidateBottom, Structure current) =>
+    not current.active or current.used or
+     direction == DIR_LONG and candidateBottom < current.bottom or
+     direction == DIR_SHORT and candidateTop > current.top
+
+// -----------------------------------------------------------------------------
+// FPI / IMB detector.
+// -----------------------------------------------------------------------------
+export detectFpi() =>
+    bool enoughBars = bar_index >= 2
+    bool bull = enoughBars and close[1] > open[1] and high[2] < low
+    bool bear = enoughBars and close[1] < open[1] and low[2] > high
+    int direction = bull ? DIR_LONG : bear ? DIR_SHORT : DIR_NONE
+    float top = bull ? low : bear ? low[2] : na
+    float bottom = bull ? high[2] : bear ? high : na
+    int middleMinute = enoughBars ? minuteOfDay(1) : -1
+    int sourceWindow = windowFromMinute(middleMinute)
+    FpiEvent.new(
+         valid = direction != DIR_NONE,
+         direction = direction,
+         top = top,
+         bottom = bottom,
+         sourceBar = bar_index,
+         sourceTime = enoughBars ? time[2] : na,
+         sourceWindow = sourceWindow,
+         middleMinute = middleMinute,
+         thirdHigh = high,
+         thirdLow = low
+    )
+
+export structureFromFpi(FpiEvent event, int family, string ruleId, string reason) =>
+    Structure.new(
+         active = event.valid,
+         used = false,
+         direction = event.direction,
+         family = family,
+         top = event.top,
+         bottom = event.bottom,
+         bodyTop = event.top,
+         bodyBottom = event.bottom,
+         invalidation = event.direction == DIR_LONG ? event.bottom : event.top,
+         sourceBar = event.sourceBar,
+         sourceTime = event.sourceTime,
+         sourceWindow = event.sourceWindow,
+         parentId = event.sourceTime,
+         status = STATUS_ARMED,
+         ruleId = ruleId,
+         reason = reason
+    )
+
+export wholeThirdCandleBgobSeed(FpiEvent event, string ruleId, string reason) =>
+    Structure.new(
+         active = event.valid,
+         used = false,
+         direction = DIR_NONE,
+         family = FAMILY_BGOB,
+         top = event.thirdHigh,
+         bottom = event.thirdLow,
+         bodyTop = math.max(open, close),
+         bodyBottom = math.min(open, close),
+         invalidation = midpoint(event.thirdHigh, event.thirdLow),
+         sourceBar = event.sourceBar,
+         sourceTime = time,
+         sourceWindow = event.sourceWindow,
+         parentId = event.sourceTime,
+         status = STATUS_ARMED,
+         ruleId = ruleId,
+         reason = reason
+    )
+
+// -----------------------------------------------------------------------------
+// BOLO order-block detector.
+//
+// The zone is the body envelope of a consecutive opposing-candle series.
+// Wicks may penetrate the body boundary. Only a completed close beyond the far
+// BODY edge invalidates the BOLO. Among all qualifying series in the lookback,
+// bullish detection returns the lowest valid body series and bearish detection
+// returns the highest valid body series.
+// -----------------------------------------------------------------------------
+export detectBoloObSeed(int direction, simple int maxLookback, int sourceWindow) =>
+    bool selected = false
+    float selectedTop = na
+    float selectedBottom = na
+    int selectedBar = na
+    int selectedTime = na
+
+    bool collecting = false
+    float groupTop = na
+    float groupBottom = na
+    int groupBar = na
+    int groupTime = na
+
+    for offset = 2 to maxLookback + 1
+        bool opposing =
+             direction == DIR_LONG ? close[offset] < open[offset] :
+             direction == DIR_SHORT ? close[offset] > open[offset] :
+             false
+
+        if opposing
+            float candleBodyTop = math.max(open[offset], close[offset])
+            float candleBodyBottom = math.min(open[offset], close[offset])
+
+            if not collecting
+                collecting := true
+                groupTop := candleBodyTop
+                groupBottom := candleBodyBottom
+                groupBar := bar_index - offset
+                groupTime := time[offset]
+            else
+                groupTop := math.max(groupTop, candleBodyTop)
+                groupBottom := math.min(groupBottom, candleBodyBottom)
+                groupBar := bar_index - offset
+                groupTime := time[offset]
+
+        bool endOfGroup = collecting and (not opposing or offset == maxLookback + 1)
+
+        if endOfGroup
+            bool moreExtreme =
+                 not selected or
+                 direction == DIR_LONG and groupBottom < selectedBottom or
+                 direction == DIR_SHORT and groupTop > selectedTop
+
+            if moreExtreme
+                selected := true
+                selectedTop := groupTop
+                selectedBottom := groupBottom
+                selectedBar := groupBar
+                selectedTime := groupTime
+
+            collecting := false
+            groupTop := na
+            groupBottom := na
+            groupBar := na
+            groupTime := na
+
+    Structure.new(
+         active = selected,
+         used = false,
+         direction = selected ? direction : DIR_NONE,
+         family = FAMILY_PRIMARY_OB,
+         top = selectedTop,
+         bottom = selectedBottom,
+         bodyTop = selectedTop,
+         bodyBottom = selectedBottom,
+         invalidation = direction == DIR_LONG ? selectedBottom : selectedTop,
+         sourceBar = selectedBar,
+         sourceTime = selectedTime,
+         sourceWindow = sourceWindow,
+         parentId = selectedTime,
+         status = selected ? STATUS_ARMED : STATUS_EMPTY,
+         ruleId = direction == DIR_LONG ? "BOLO-BULL-SEED" : "BOLO-BEAR-SEED",
+         reason = direction == DIR_LONG ? "LOWEST_VALID_BULLISH_BOLO" : "HIGHEST_VALID_BEARISH_BOLO"
+    )
+
+// Backward-compatible adapter. Existing scripts calling detectObSeed receive the
+// corrected BOLO body-series detector.
+export detectObSeed(int direction, simple int maxLookback, int sourceWindow) =>
+    detectBoloObSeed(direction, maxLookback, sourceWindow)
+
+// -----------------------------------------------------------------------------
+// Text and arithmetic helpers.
+// -----------------------------------------------------------------------------
+export sideText(int direction) => direction == DIR_LONG ? "BUY" : direction == DIR_SHORT ? "SELL" : "NONE"
+
+export familyText(int family) =>
+    family == FAMILY_PRIMARY_OB ? "PRIMARY OB" :
+     family == FAMILY_POST_OB_IMB ? "POST-OB IMB" :
+     family == FAMILY_BGOB ? "BGOB" :
+     family == FAMILY_IMB_RETEST ? "IMB" :
+     family == FAMILY_OPENING_945_FLIP ? "9:45 FLIP" :
+     family == FAMILY_30M_REVERSAL ? "30M REVERSAL" :
+     family == FAMILY_POST_MACRO_RETURN ? "POST-MACRO RETURN" :
+     family == FAMILY_PRIOR_FPI ? "PRIOR FPI" : "NONE"
+
+export tradePoints(int direction, float entryPrice, float exitPrice) =>
+    direction == DIR_LONG ? exitPrice - entryPrice : direction == DIR_SHORT ? entryPrice - exitPrice : na
