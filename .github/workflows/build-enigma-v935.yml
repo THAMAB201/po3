@@ -1,0 +1,144 @@
+name: Build Enigma V9.3.5
+
+on:
+  push:
+    branches:
+      - enigma-v9-3-window-narrative
+    paths:
+      - .github/workflows/build-enigma-v935.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Create corrected full Pine strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_3_4_BOLO_IMB_Window_Handoff.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_3_5_Strict_Window_Provenance.pine')
+          workflow = Path('.github/workflows/build-enigma-v935.yml')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.3.4 BOLO IMB Window Handoff",\n    shorttitle = "PO3E934H",',
+              '"PO3 MMXM Enigma V9.3.5 Strict Window Provenance",\n    shorttitle = "PO3E935W",'
+          )
+
+          old_helper = '''minuteValue(int h, int m) => h * 60 + m
+          amStart() => minuteValue(amStartHour, amStartMinute)'''
+          new_helper = '''minuteValue(int h, int m) => h * 60 + m
+          minuteFromTimestamp(int timestampValue) => na(timestampValue) ? -1 : hour(timestampValue, "America/New_York") * 60 + minute(timestampValue, "America/New_York")
+          actualWindowFromTimestamp(int timestampValue) => market.windowFromMinute(minuteFromTimestamp(timestampValue))
+          amStart() => minuteValue(amStartHour, amStartMinute)'''
+          if old_helper not in text:
+              raise RuntimeError('helper insertion anchor not found')
+          text = text.replace(old_helper, new_helper, 1)
+
+          old_relationship = 'bool relationshipValid = structure.active and foundation.active and structure.direction == targetDirection and foundation.direction == targetDirection and structure.sourceWindow == requiredWindow and foundation.sourceWindow == requiredWindow and structure.parentId == foundation.sourceBar and not na(structure.breakBar) and structure.breakBar >= foundationConfirmBar and bar_index > structure.breakBar'
+          new_relationship = 'bool relationshipValid = structure.active and foundation.active and structure.direction == targetDirection and foundation.direction == targetDirection and structure.sourceWindow == requiredWindow and foundation.sourceWindow == requiredWindow and actualWindowFromTimestamp(structure.sourceTime) == requiredWindow and actualWindowFromTimestamp(foundation.sourceTime) == requiredWindow and structure.parentId == foundation.sourceBar and structure.sourceBar > foundationConfirmBar and not na(structure.breakBar) and structure.breakBar > foundationConfirmBar and bar_index > structure.breakBar'
+          if old_relationship not in text:
+              raise RuntimeError('bound IMB relationship anchor not found')
+          text = text.replace(old_relationship, new_relationship, 1)
+
+          old_bolo = '''        if enableBolo
+              boloSeed = market.detectBoloObSeed(fpiEvent.direction, obSearchBars, w)
+              if boloSeed.active
+                  targetBolo = fpiEvent.direction == market.DIR_LONG ? array.get(windowBullBolo, w) : array.get(windowBearBolo, w)
+                  if armMoreExtreme(targetBolo, boloSeed, fpiEvent.direction) and drawStructureBoxes
+                      box boloBox = newZone(boloSeed.sourceTime, time + (market.periodEndMinute(w) - nowMinute) * 60000, boloSeed.top, boloSeed.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish BOLO OB" : "Bearish BOLO OB", zoneTransparency)
+                      array.push(drawings, boloBox)'''
+          new_bolo = '''        if enableBolo
+              boloSeed = market.detectBoloObSeed(fpiEvent.direction, obSearchBars, w)
+              int boloActualWindow = boloSeed.active ? actualWindowFromTimestamp(boloSeed.sourceTime) : -1
+              int boloActualSession = boloSeed.active ? sessionId(minuteFromTimestamp(boloSeed.sourceTime)) : -1
+              bool boloSourceProvenanceValid = boloSeed.active and boloActualWindow == w and boloActualSession == currentSession
+              if boloSourceProvenanceValid
+                  // The detector may search backward across a 30-minute boundary. Preserve
+                  // the actual source-candle window instead of stamping it into the FPI window.
+                  boloSeed.sourceWindow := boloActualWindow
+                  targetBolo = fpiEvent.direction == market.DIR_LONG ? array.get(windowBullBolo, w) : array.get(windowBearBolo, w)
+                  if armMoreExtreme(targetBolo, boloSeed, fpiEvent.direction) and drawStructureBoxes
+                      box boloBox = newZone(boloSeed.sourceTime, time + (market.periodEndMinute(w) - nowMinute) * 60000, boloSeed.top, boloSeed.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish BOLO OB" : "Bearish BOLO OB", zoneTransparency)
+                      array.push(drawings, boloBox)'''
+          if old_bolo not in text:
+              raise RuntimeError('BOLO provenance block anchor not found')
+          text = text.replace(old_bolo, new_bolo, 1)
+
+          old_current_source = 'bool currentSourceWindow = alignedBoloNow.sourceWindow == currentWindow'
+          new_current_source = 'bool currentSourceWindow = alignedBoloNow.sourceWindow == currentWindow and actualWindowFromTimestamp(alignedBoloNow.sourceTime) == currentWindow'
+          if old_current_source not in text:
+              raise RuntimeError('strict BOLO current-window anchor not found')
+          text = text.replace(old_current_source, new_current_source, 1)
+
+          old_strict_fpi = '''if laterThanJudas and eligibleFpi and fpiEvent.sourceWindow == currentWindow and fpiEvent.direction == structuralDirection
+              strictFoundation = array.get(reversalFoundation, currentWindow)
+              int strictFoundationConfirmBar = array.get(reversalFoundationBar, currentWindow)
+              int strictDirection = array.get(reversalDirection, currentWindow)
+              bool foundationReady = strictFoundation.active and strictFoundation.sourceWindow == currentWindow and strictDirection == structuralDirection and not na(strictFoundationConfirmBar)
+              bool fpiBelongsToFoundation = foundationReady and fpiEvent.sourceBar >= strictFoundation.sourceBar and bar_index >= strictFoundationConfirmBar
+              if enableImb and fpiBelongsToFoundation'''
+          new_strict_fpi = '''int strictFpiFirstWindow = eligibleFpi ? market.windowFromMinute(firstFpiMinute) : -1
+          int strictFpiMiddleWindow = eligibleFpi ? market.windowFromMinute(fpiEvent.middleMinute) : -1
+          int strictFpiThirdWindow = eligibleFpi ? currentWindow : -1
+          bool strictFpiWhollyCurrentWindow = eligibleFpi and strictFpiFirstWindow == currentWindow and strictFpiMiddleWindow == currentWindow and strictFpiThirdWindow == currentWindow
+
+          if laterThanJudas and strictFpiWhollyCurrentWindow and fpiEvent.direction == structuralDirection
+              strictFoundation = array.get(reversalFoundation, currentWindow)
+              int strictFoundationConfirmBar = array.get(reversalFoundationBar, currentWindow)
+              int strictDirection = array.get(reversalDirection, currentWindow)
+              bool foundationReady = strictFoundation.active and strictFoundation.sourceWindow == currentWindow and actualWindowFromTimestamp(strictFoundation.sourceTime) == currentWindow and strictDirection == structuralDirection and not na(strictFoundationConfirmBar)
+              // The entire three-candle IMB must begin after the BOLO retest/close confirmation.
+              // The BOLO's own confirming FPI or a boundary-crossing FPI cannot be reused.
+              bool fpiBelongsToFoundation = foundationReady and fpiEvent.sourceBar > strictFoundationConfirmBar and bar_index > strictFoundationConfirmBar
+              if enableImb and fpiBelongsToFoundation'''
+          if old_strict_fpi not in text:
+              raise RuntimeError('strict post-BOLO FPI anchor not found')
+          text = text.replace(old_strict_fpi, new_strict_fpi, 1)
+
+          old_exact = 'strictSupport.parentId == strictFoundation.sourceBar and strictSupport.breakBar >= strictFoundationConfirmBar and strictSupport.confirmBar > strictSupport.breakBar and strictSupportConfirmBar == bar_index'
+          new_exact = 'strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar > strictFoundationConfirmBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and strictSupport.breakBar > strictFoundationConfirmBar and strictSupport.confirmBar > strictSupport.breakBar and strictSupportConfirmBar == bar_index'
+          if old_exact not in text:
+              raise RuntimeError('exact sequence anchor not found')
+          text = text.replace(old_exact, new_exact, 1)
+
+          text = text.replace(
+              '"CURRENT_WINDOW_BOLO_THEN_SAME_DIRECTION_IMB_RETEST_RESPECT"',
+              '"ACTUAL_CURRENT_WINDOW_BOLO_THEN_NEW_IMB_RETEST_RESPECT"',
+              1
+          )
+
+          required = [
+              'shorttitle = "PO3E935W"',
+              'actualWindowFromTimestamp',
+              'boloSourceProvenanceValid',
+              'strictFpiWhollyCurrentWindow',
+              'fpiEvent.sourceBar > strictFoundationConfirmBar',
+              'strictSupport.sourceBar > strictFoundationConfirmBar'
+          ]
+          for item in required:
+              if item not in text:
+                  raise RuntimeError(f'missing required patch: {item}')
+
+          target.write_text(text, encoding='utf-8')
+          workflow.unlink()
+          PY
+
+      - name: Commit generated strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add V9.3.5 strict source-window and post-BOLO IMB gates"
+          git push origin HEAD:enigma-v9-3-window-narrative
