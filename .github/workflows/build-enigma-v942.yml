@@ -1,0 +1,203 @@
+name: Build Enigma V9.4.2
+
+on:
+  push:
+    branches:
+      - enigma-v9-3-window-narrative
+    paths:
+      - .github/workflows/build-enigma-v942.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Create corrected full Pine strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_1_Sequenced_Judas_Delivery_Hold.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_2_Irreversible_IMB_Lifecycle.pine')
+          workflow = Path('.github/workflows/build-enigma-v942.yml')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.4.1 Sequenced Judas Delivery Hold",\n    shorttitle = "PO3E941H",',
+              '"PO3 MMXM Enigma V9.4.2 Irreversible IMB Lifecycle",\n    shorttitle = "PO3E942I",'
+          )
+
+          old_bind = '''bindImbCandidate(target, source, foundation, int direction, int requiredWindow) =>
+              bool causal = source.active and foundation.active and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and not na(source.breakBar)
+              bool replace = causal and (not target.active or moreExtreme(source.top, source.bottom, target.top, target.bottom, direction))
+              if replace
+                  copyStructure(target, source)
+                  target.direction := direction
+                  target.family := market.FAMILY_POST_OB_IMB
+                  target.parentId := foundation.sourceBar
+                  target.sourceWindow := requiredWindow
+                  target.invalidation := direction == market.DIR_LONG ? target.bottom : target.top
+                  target.status := market.STATUS_ARMED
+                  target.confirmBar := na
+                  target.touching := false
+                  target.ruleId := direction == market.DIR_LONG ? "BOUND-IMB-BUY" : "BOUND-IMB-SELL"
+                  target.reason := source.direction == direction ? "ALIGNED_IMB_BOUND_TO_FOUNDATION" : "OPPOSING_IMB_RECLAIM_BOUND_TO_FOUNDATION"
+              replace
+
+          boundedStop'''
+
+          new_bind = '''bindImbCandidate(target, source, foundation, int direction, int requiredWindow) =>
+              // STATUS_INVALID is terminal for this exact IMB. A later candle can
+              // never revive or re-bind the same zone after body-close disrespect.
+              bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED
+              bool causal = sourceLive and foundation.active and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and not na(source.breakBar)
+              bool replace = causal and (not target.active or target.status == market.STATUS_INVALID or moreExtreme(source.top, source.bottom, target.top, target.bottom, direction))
+              if replace
+                  copyStructure(target, source)
+                  target.direction := direction
+                  target.family := market.FAMILY_POST_OB_IMB
+                  target.parentId := foundation.sourceBar
+                  target.sourceWindow := requiredWindow
+                  target.invalidation := direction == market.DIR_LONG ? target.bottom : target.top
+                  target.status := market.STATUS_ARMED
+                  target.confirmBar := na
+                  target.touching := false
+                  target.ruleId := direction == market.DIR_LONG ? "BOUND-IMB-BUY" : "BOUND-IMB-SELL"
+                  target.reason := source.direction == direction ? "ALIGNED_IMB_BOUND_TO_FOUNDATION" : "OPPOSING_IMB_RECLAIM_BOUND_TO_FOUNDATION"
+              replace
+
+          permanentlyInvalidateImb(structure) =>
+              structure.status := market.STATUS_INVALID
+              structure.active := false
+              structure.used := true
+              structure.touching := false
+              structure.confirmBar := na
+              0
+
+          sameImbInstance(first, second) =>
+              first.active and second.active and first.sourceBar == second.sourceBar and first.sourceTime == second.sourceTime and first.sourceWindow == second.sourceWindow
+
+          boundedStop'''
+
+          if old_bind not in text:
+              raise RuntimeError('bind IMB helper anchor not found')
+          text = text.replace(old_bind, new_bind, 1)
+
+          old_selection = '''// =============================================================================
+          // Signal selection
+          // =============================================================================
+          selectedSignal = market.newSignal()'''
+
+          new_selection = '''// =============================================================================
+          // Irreversible IMB lifecycle
+          // =============================================================================
+          // Bullish IMB disrespect = body close below its lower edge.
+          // Bearish IMB disrespect = body close above its upper edge.
+          // The first opposing-direction disrespect may complete a fully armed
+          // reclaim on that same candle. If it does not, the IMB and every bound
+          // copy are permanently invalidated before any later candle can use them.
+          bool bullImbDisrespectedNow = bullImbCandidate.active and bullImbCandidate.status == market.STATUS_ARMED and bar_index > nz(bullImbCandidate.breakBar, bullImbCandidate.sourceBar) and close < bullImbCandidate.bottom
+          bool bearImbDisrespectedNow = bearImbCandidate.active and bearImbCandidate.status == market.STATUS_ARMED and bar_index > nz(bearImbCandidate.breakBar, bearImbCandidate.sourceBar) and close > bearImbCandidate.top
+
+          bool recoveryUsesBullImb = sameImbInstance(recoverySupport, bullImbCandidate)
+          bool recoveryUsesBearImb = sameImbInstance(recoverySupport, bearImbCandidate)
+          bool judasUsesBullImb = sameImbInstance(judasSupport, bullImbCandidate)
+          bool judasUsesBearImb = sameImbInstance(judasSupport, bearImbCandidate)
+
+          if bullImbDisrespectedNow
+              bool bullConsumedAsRecoveryReclaim = recoveryUsesBullImb and recoverySignal.valid
+              bool bullConsumedAsJudasReclaim = judasUsesBullImb and judasSequenceSignal.valid
+              if recoveryUsesBullImb and not bullConsumedAsRecoveryReclaim
+                  permanentlyInvalidateImb(recoverySupport)
+                  recoverySupportConfirmBar := na
+              if judasUsesBullImb and not bullConsumedAsJudasReclaim
+                  permanentlyInvalidateImb(judasSupport)
+                  judasSupportConfirmBar := na
+              permanentlyInvalidateImb(bullImbCandidate)
+
+          if bearImbDisrespectedNow
+              bool bearConsumedAsRecoveryReclaim = recoveryUsesBearImb and recoverySignal.valid
+              bool bearConsumedAsJudasReclaim = judasUsesBearImb and judasSequenceSignal.valid
+              if recoveryUsesBearImb and not bearConsumedAsRecoveryReclaim
+                  permanentlyInvalidateImb(recoverySupport)
+                  recoverySupportConfirmBar := na
+              if judasUsesBearImb and not bearConsumedAsJudasReclaim
+                  permanentlyInvalidateImb(judasSupport)
+                  judasSupportConfirmBar := na
+              permanentlyInvalidateImb(bearImbCandidate)
+
+          if recoveryFoundation.active and not recoverySupport.active and windowState == WINDOW_IMB_ARMED
+              windowState := WINDOW_FOUNDATION_CONFIRMED
+
+          // =============================================================================
+          // Signal selection
+          // =============================================================================
+          selectedSignal = market.newSignal()'''
+
+          if old_selection not in text:
+              raise RuntimeError('signal selection anchor not found')
+          text = text.replace(old_selection, new_selection, 1)
+
+          old_recovery_retest = '''if recoveryWindowEligible and recoveryFoundation.active and recoverySupport.active and not windowResolved
+              int supportEligibleAfter = int(math.max(nz(recoveryFoundationConfirmBar, bar_index), nz(recoverySupport.breakBar, bar_index)))
+              if bar_index > supportEligibleAfter
+                  bool touch = market.overlaps(recoverySupport.top, recoverySupport.bottom, high, low)'''
+          new_recovery_retest = '''if recoveryWindowEligible and recoveryFoundation.active and recoverySupport.active and recoverySupport.status == market.STATUS_ARMED and not windowResolved
+              int supportEligibleAfter = int(math.max(nz(recoveryFoundationConfirmBar, bar_index), nz(recoverySupport.breakBar, bar_index)))
+              if bar_index > supportEligibleAfter
+                  bool touch = market.overlaps(recoverySupport.top, recoverySupport.bottom, high, low)'''
+          if old_recovery_retest not in text:
+              raise RuntimeError('recovery support lifecycle anchor not found')
+          text = text.replace(old_recovery_retest, new_recovery_retest, 1)
+
+          old_judas_support = '''        else if judasSupport.active
+                  int judasEligibleAfter = int(math.max(nz(judasFoundationConfirmBar, bar_index), nz(judasSupport.breakBar, bar_index)))'''
+          new_judas_support = '''        else if judasSupport.active and judasSupport.status == market.STATUS_ARMED
+                  int judasEligibleAfter = int(math.max(nz(judasFoundationConfirmBar, bar_index), nz(judasSupport.breakBar, bar_index)))'''
+          if old_judas_support not in text:
+              raise RuntimeError('Judas support lifecycle anchor not found')
+          text = text.replace(old_judas_support, new_judas_support, 1)
+
+          old_diag = '''plot(judasSupportConfirmBar, "Judas Bound IMB Confirm Bar", display = display.data_window)
+          plot(tradeActive ? tradeDirection : 0, "Active Trade Direction", display = display.data_window)'''
+          new_diag = '''plot(judasSupportConfirmBar, "Judas Bound IMB Confirm Bar", display = display.data_window)
+          plot(bullImbCandidate.status, "Bull IMB Lifecycle Status", display = display.data_window)
+          plot(bearImbCandidate.status, "Bear IMB Lifecycle Status", display = display.data_window)
+          plot(tradeActive ? tradeDirection : 0, "Active Trade Direction", display = display.data_window)'''
+          if old_diag not in text:
+              raise RuntimeError('diagnostic anchor not found')
+          text = text.replace(old_diag, new_diag, 1)
+
+          required = [
+              'shorttitle = "PO3E942I"',
+              'bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED',
+              'permanentlyInvalidateImb',
+              'bullImbDisrespectedNow',
+              'bearImbDisrespectedNow',
+              'recoverySupport.status == market.STATUS_ARMED',
+              'judasSupport.status == market.STATUS_ARMED'
+          ]
+          for item in required:
+              if item not in text:
+                  raise RuntimeError(f'missing required patch: {item}')
+
+          target.write_text(text, encoding='utf-8')
+          workflow.unlink()
+          PY
+
+      - name: Commit generated strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add V9.4.2 irreversible IMB lifecycle and stale-zone blocking"
+          git push origin HEAD:enigma-v9-3-window-narrative
