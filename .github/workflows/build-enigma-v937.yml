@@ -1,0 +1,199 @@
+name: Build Enigma V9.3.7
+
+on:
+  push:
+    branches:
+      - enigma-v9-3-window-narrative
+    paths:
+      - .github/workflows/build-enigma-v937.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Create corrected full Pine strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_3_5_Strict_Window_Provenance.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_3_7_Persistent_Window_Narrative.pine')
+          workflow = Path('.github/workflows/build-enigma-v937.yml')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.3.5 Strict Window Provenance",\n    shorttitle = "PO3E935W",',
+              '"PO3 MMXM Enigma V9.3.7 Persistent Window Narrative",\n    shorttitle = "PO3E937N",'
+          )
+
+          old_update = '''updateRetest(structure, int family, string ruleId, string reasonText) =>
+              signal = market.newSignal()
+              int eligibleAfter = not na(structure.breakBar) ? structure.breakBar : structure.sourceBar
+              if structure.active and not structure.used and structure.status == market.STATUS_ARMED and bar_index > eligibleAfter
+                  bool invalid = market.bodyCloseInvalidates(structure.direction, structure.invalidation, close)
+                  bool touch = market.overlaps(structure.top, structure.bottom, high, low)
+                  bool confirms = structure.direction == market.DIR_LONG ? close > structure.bodyTop : close < structure.bodyBottom
+                  if invalid
+                      structure.status := market.STATUS_INVALID
+                  else
+                      if touch
+                          structure.touching := true
+                      if structure.touching and confirms
+                          structure.status := market.STATUS_CONFIRMED
+                          structure.confirmBar := bar_index
+                          signal := market.signalFromStructure(structure, family, true, false, ruleId, reasonText)
+              signal
+
+          updateOpposingImbReclaim'''
+
+          new_update = '''updateRetest(structure, int family, string ruleId, string reasonText) =>
+              signal = market.newSignal()
+              int eligibleAfter = not na(structure.breakBar) ? structure.breakBar : structure.sourceBar
+              if structure.active and not structure.used and structure.status == market.STATUS_ARMED and bar_index > eligibleAfter
+                  bool invalid = market.bodyCloseInvalidates(structure.direction, structure.invalidation, close)
+                  bool touch = market.overlaps(structure.top, structure.bottom, high, low)
+                  bool confirms = structure.direction == market.DIR_LONG ? close > structure.bodyTop : close < structure.bodyBottom
+                  if invalid
+                      structure.status := market.STATUS_INVALID
+                  else
+                      if touch
+                          structure.touching := true
+                      if structure.touching and confirms
+                          structure.status := market.STATUS_CONFIRMED
+                          structure.confirmBar := bar_index
+                          signal := market.signalFromStructure(structure, family, true, false, ruleId, reasonText)
+              signal
+
+          // A reversal foundation is not validated merely because price is still
+          // sitting inside the source candle body. It must first displace away,
+          // then receive a later retest and directional body-close respect.
+          updateFoundationRetest(structure, int direction, string ruleId, string reasonText) =>
+              signal = market.newSignal()
+              if structure.active and not structure.used and bar_index > structure.sourceBar
+                  bool invalid = market.bodyCloseInvalidates(direction, structure.invalidation, close)
+                  if invalid
+                      structure.status := market.STATUS_INVALID
+                      structure.active := false
+                  else
+                      if structure.status == market.STATUS_ARMED
+                          bool displacedAway = direction == market.DIR_LONG ? close > structure.top : close < structure.bottom
+                          if displacedAway
+                              structure.status := market.STATUS_BROKEN
+                              structure.breakBar := bar_index
+                              structure.touching := false
+                      else if structure.status == market.STATUS_BROKEN and not na(structure.breakBar) and bar_index > structure.breakBar
+                          bool retest = market.overlaps(structure.top, structure.bottom, high, low)
+                          if retest
+                              structure.touching := true
+                          bool confirms = direction == market.DIR_LONG ? structure.touching and close > structure.top and close > open : structure.touching and close < structure.bottom and close < open
+                          if confirms
+                              structure.status := market.STATUS_CONFIRMED
+                              structure.confirmBar := bar_index
+                              signal := market.signalFromStructure(structure, market.FAMILY_PRIMARY_OB, true, false, ruleId, reasonText)
+              signal
+
+          updateOpposingImbReclaim'''
+
+          if old_update not in text:
+              raise RuntimeError('foundation updater anchor not found')
+          text = text.replace(old_update, new_update, 1)
+
+          old_relationship = 'bool relationshipValid = structure.active and foundation.active and structure.direction == targetDirection and foundation.direction == targetDirection and structure.sourceWindow == requiredWindow and foundation.sourceWindow == requiredWindow and actualWindowFromTimestamp(structure.sourceTime) == requiredWindow and actualWindowFromTimestamp(foundation.sourceTime) == requiredWindow and structure.parentId == foundation.sourceBar and structure.sourceBar > foundationConfirmBar and not na(structure.breakBar) and structure.breakBar > foundationConfirmBar and bar_index > structure.breakBar'
+          new_relationship = 'bool relationshipValid = structure.active and foundation.active and structure.direction == targetDirection and foundation.direction == targetDirection and structure.sourceWindow == requiredWindow and foundation.sourceWindow == requiredWindow and actualWindowFromTimestamp(structure.sourceTime) == requiredWindow and actualWindowFromTimestamp(foundation.sourceTime) == requiredWindow and structure.parentId == foundation.sourceBar and structure.sourceBar >= foundation.sourceBar and not na(structure.breakBar) and structure.breakBar >= foundationConfirmBar and bar_index > structure.breakBar'
+          if old_relationship not in text:
+              raise RuntimeError('bound IMB relationship anchor not found')
+          text = text.replace(old_relationship, new_relationship, 1)
+
+          old_confirm = '''    bullBoloNow := enableBolo ? updateRetest(bullBolo, market.FAMILY_PRIMARY_OB, "BOLO-BULL-02", "CURRENT_WINDOW_BULLISH_BOLO_RETEST_RESPECT") : market.newSignal()
+              bearBoloNow := enableBolo ? updateRetest(bearBolo, market.FAMILY_PRIMARY_OB, "BOLO-BEAR-02", "CURRENT_WINDOW_BEARISH_BOLO_RETEST_RESPECT") : market.newSignal()'''
+          new_confirm = '''    bullBoloNow := enableBolo ? updateFoundationRetest(bullBolo, market.DIR_LONG, "OB-BOLO-BULL-02", "CURRENT_WINDOW_BULLISH_OB_BOLO_BREAK_RETEST_RESPECT") : market.newSignal()
+              bearBoloNow := enableBolo ? updateFoundationRetest(bearBolo, market.DIR_SHORT, "OB-BOLO-BEAR-02", "CURRENT_WINDOW_BEARISH_OB_BOLO_BREAK_RETEST_RESPECT") : market.newSignal()'''
+          if old_confirm not in text:
+              raise RuntimeError('current window foundation confirmation anchor not found')
+          text = text.replace(old_confirm, new_confirm, 1)
+
+          old_comment_block = '''// The strict support IMB must be created after the BOLO retest/close confirmation.
+          // A boundary-crossing FPI, an older IMB, or the BOLO's own confirmation event
+          // cannot be recycled to authorize the reversal.'''
+          new_comment_block = '''// The displacement that validates the OB/BOLO may also create the IMB.
+          // Entry still requires a later IMB retest and directional close. Older,
+          // opposite-direction and boundary-crossing IMBs remain ineligible.'''
+          if old_comment_block not in text:
+              raise RuntimeError('strict support comment anchor not found')
+          text = text.replace(old_comment_block, new_comment_block, 1)
+
+          old_belongs = 'bool fpiBelongsToFoundation = foundationReady and fpiEvent.sourceBar > strictFoundationConfirmBar and bar_index > strictFoundationConfirmBar'
+          new_belongs = 'bool fpiBelongsToFoundation = foundationReady and fpiEvent.sourceBar >= strictFoundation.sourceBar and bar_index >= strictFoundationConfirmBar'
+          if old_belongs not in text:
+              raise RuntimeError('causal FPI relationship anchor not found')
+          text = text.replace(old_belongs, new_belongs, 1)
+
+          old_exact = 'strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar > strictFoundationConfirmBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and strictSupport.breakBar > strictFoundationConfirmBar and strictSupport.confirmBar > strictSupport.breakBar and strictSupportConfirmBar == bar_index'
+          new_exact = 'strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar >= strictFoundation.sourceBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and strictSupport.breakBar >= strictFoundationConfirmBar and strictSupport.confirmBar > strictSupport.breakBar and strictSupportConfirmBar == bar_index'
+          if old_exact not in text:
+              raise RuntimeError('exact sequence anchor not found')
+          text = text.replace(old_exact, new_exact, 1)
+
+          old_authority = '''    int currentAuthority = array.get(winAuthority, currentWindow)
+              bool validFamily = strictFoundation.family == market.FAMILY_PRIMARY_OB
+              bool exactRelationship = strictFoundation.active and strictSupport.active and strictFoundation.status == market.STATUS_CONFIRMED and strictSupport.status == market.STATUS_CONFIRMED and strictDirection == structuralDirection and strictFoundation.sourceWindow == currentWindow and actualWindowFromTimestamp(strictFoundation.sourceTime) == currentWindow and strictSupport.sourceWindow == currentWindow and strictSupport.direction == structuralDirection and strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar >= strictFoundation.sourceBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and strictSupport.breakBar >= strictFoundationConfirmBar and strictSupport.confirmBar > strictSupport.breakBar and strictSupportConfirmBar == bar_index
+              bool authorityPass = currentAuthority == structuralDirection
+              if validFamily and exactRelationship and authorityPass'''
+          new_authority = '''    int currentAuthority = array.get(winAuthority, currentWindow)
+              bool validFamily = strictFoundation.family == market.FAMILY_PRIMARY_OB
+              bool exactRelationship = strictFoundation.active and strictSupport.active and strictFoundation.status == market.STATUS_CONFIRMED and strictSupport.status == market.STATUS_CONFIRMED and strictDirection == structuralDirection and strictFoundation.sourceWindow == currentWindow and actualWindowFromTimestamp(strictFoundation.sourceTime) == currentWindow and strictSupport.sourceWindow == currentWindow and strictSupport.direction == structuralDirection and strictSupport.parentId == strictFoundation.sourceBar and strictSupport.sourceBar >= strictFoundation.sourceBar and actualWindowFromTimestamp(strictSupport.sourceTime) == currentWindow and strictSupport.breakBar >= strictFoundationConfirmBar and strictSupport.confirmBar > strictSupport.breakBar and strictSupportConfirmBar == bar_index
+              // Session FPI is the persistent global objective. The current window's
+              // live price location cannot erase a completed OB/BOLO -> IMB recovery.
+              bool sessionBiasPass = sessionFpiFound and structuralDirection != market.DIR_NONE and strictDirection == structuralDirection
+              if validFamily and exactRelationship and sessionBiasPass'''
+          if old_authority not in text:
+              raise RuntimeError('authority gate anchor not found')
+          text = text.replace(old_authority, new_authority, 1)
+
+          text = text.replace(
+              '"ACTUAL_CURRENT_WINDOW_BOLO_THEN_NEW_IMB_RETEST_RESPECT"',
+              '"PERSISTENT_SESSION_FPI_CURRENT_WINDOW_OB_BOLO_IMB_RECOVERY"',
+              1
+          )
+
+          old_state_plot = 'plot(currentWindow >= 0 ? array.get(winAuthority, currentWindow) : na, "Current Window Live Authority", display = display.data_window)'
+          new_state_plot = '''plot(currentWindow >= 0 ? array.get(winAuthority, currentWindow) : na, "Current Window Live Authority (Context Only)", display = display.data_window)
+          plot(currentWindow >= 0 ? array.get(reversalDirection, currentWindow) : na, "Recovery Direction", display = display.data_window)'''
+          if old_state_plot not in text:
+              raise RuntimeError('diagnostic plot anchor not found')
+          text = text.replace(old_state_plot, new_state_plot, 1)
+
+          required = [
+              'shorttitle = "PO3E937N"',
+              'updateFoundationRetest',
+              'structure.status := market.STATUS_BROKEN',
+              'fpiEvent.sourceBar >= strictFoundation.sourceBar',
+              'strictSupport.breakBar >= strictFoundationConfirmBar',
+              'bool sessionBiasPass',
+              'PERSISTENT_SESSION_FPI_CURRENT_WINDOW_OB_BOLO_IMB_RECOVERY'
+          ]
+          for item in required:
+              if item not in text:
+                  raise RuntimeError(f'missing required patch: {item}')
+
+          target.write_text(text, encoding='utf-8')
+          workflow.unlink()
+          PY
+
+      - name: Commit generated strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add V9.3.7 persistent window OB BOLO IMB recovery"
+          git push origin HEAD:enigma-v9-3-window-narrative
