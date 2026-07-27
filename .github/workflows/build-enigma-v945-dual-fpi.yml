@@ -1,0 +1,250 @@
+name: Build Enigma V9.4.5 Dual FPI Judas
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-enigma-v945-dual-fpi.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Create minimally patched full Pine strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_4_Dynamic_30m_Narrative.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_5_Dual_FPI_Judas_Authority.pine')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.4.4 Dynamic 30m Narrative",\n    shorttitle = "PO3E944D",',
+              '"PO3 MMXM Enigma V9.4.5 Dual FPI Judas Authority",\n    shorttitle = "PO3E945M",',
+              1,
+          )
+
+          old_session_inputs = '''bool ignoreSessionBoundaryGapFpi = input.bool(false, "Stocks/RTH: Ignore FPI Crossing Session Start", group = G_SESSION)
+          '''
+          new_session_inputs = '''bool ignoreSessionBoundaryGapFpi = input.bool(false, "Stocks/RTH: Ignore FPI Crossing Session Start", group = G_SESSION)
+          int macroStartOffsetMinutes = input.int(20, "First Macro Start Offset", minval = 1, maxval = 60, group = G_SESSION)
+          int macroWindowMinutes = input.int(20, "First Macro Duration", minval = 1, maxval = 60, group = G_SESSION)
+          bool enableSessionMacroBreakJudas = input.bool(true, "Session + First Macro Break Enables Judas Sequence", group = G_SESSION, tooltip = "Minimal tactical patch. A body close beyond both the Session FPI and first Macro FPI in the direction opposite Session bias latches counter-bias authority. Entry still requires the existing current-window OB/BOLO -> aligned IMB -> later retest sequence.")
+          '''
+          if old_session_inputs not in text:
+              raise RuntimeError('session input anchor not found')
+          text = text.replace(old_session_inputs, new_session_inputs, 1)
+
+          old_helpers = '''sessionStartMinute(int id) => id == 0 ? amStart() : id == 1 ? lunchStart() : id == 2 ? pmStart() : -1
+          sessionEndMinute(int id) => id == 0 ? lunchStart() : id == 1 ? pmStart() : id == 2 ? market.SESSION_END_MINUTE : -1
+          sessionName(int id) => id == 0 ? "AM" : id == 1 ? "LUNCH" : id == 2 ? "PM" : "OFF"
+          '''
+          new_helpers = '''sessionStartMinute(int id) => id == 0 ? amStart() : id == 1 ? lunchStart() : id == 2 ? pmStart() : -1
+          sessionEndMinute(int id) => id == 0 ? lunchStart() : id == 1 ? pmStart() : id == 2 ? market.SESSION_END_MINUTE : -1
+          sessionName(int id) => id == 0 ? "AM" : id == 1 ? "LUNCH" : id == 2 ? "PM" : "OFF"
+          macroStartMinute(int id) => sessionStartMinute(id) >= 0 ? sessionStartMinute(id) + macroStartOffsetMinutes : -1
+          macroEndMinute(int id) => macroStartMinute(id) >= 0 ? int(math.min(sessionEndMinute(id), macroStartMinute(id) + macroWindowMinutes)) : -1
+          '''
+          if old_helpers not in text:
+              raise RuntimeError('session helper anchor not found')
+          text = text.replace(old_helpers, new_helpers, 1)
+
+          old_session_state = '''var sessionFpi = market.newStructure()
+          var bool sessionFpiFound = false
+          var int sessionDirection = market.DIR_NONE
+          var int phase = PHASE_WAIT
+          var int activeSessionId = -1
+          var int judasStartWindow = -1
+          var bool judasCompleted = false
+          var bool judasEntryTaken = false
+          '''
+          new_session_state = '''var sessionFpi = market.newStructure()
+          var bool sessionFpiFound = false
+          var macroFpi = market.newStructure()
+          var bool macroFpiFound = false
+          var int sessionDirection = market.DIR_NONE
+          var int phase = PHASE_WAIT
+          var int activeSessionId = -1
+          var int judasStartWindow = -1
+          var bool judasCompleted = false
+          var bool judasEntryTaken = false
+          var bool sessionMacroBreakLatched = false
+          var int sessionMacroBreakDirection = market.DIR_NONE
+          var int sessionMacroBreakBar = na
+          '''
+          if old_session_state not in text:
+              raise RuntimeError('session state anchor not found')
+          text = text.replace(old_session_state, new_session_state, 1)
+
+          old_reset = '''    sessionFpi := market.newStructure()
+              sessionFpiFound := false
+              sessionDirection := market.DIR_NONE
+              phase := PHASE_WAIT
+              judasStartWindow := -1
+              judasCompleted := false
+              judasEntryTaken := false
+          '''
+          new_reset = '''    sessionFpi := market.newStructure()
+              sessionFpiFound := false
+              macroFpi := market.newStructure()
+              macroFpiFound := false
+              sessionDirection := market.DIR_NONE
+              phase := PHASE_WAIT
+              judasStartWindow := -1
+              judasCompleted := false
+              judasEntryTaken := false
+              sessionMacroBreakLatched := false
+              sessionMacroBreakDirection := market.DIR_NONE
+              sessionMacroBreakBar := na
+          '''
+          if old_reset not in text:
+              raise RuntimeError('session reset anchor not found')
+          text = text.replace(old_reset, new_reset, 1)
+
+          old_session_fpi_block = '''    bool belongsToSession = fpiEvent.middleMinute >= sessionStartMinute(currentSession) and fpiEvent.middleMinute < sessionEndMinute(currentSession)
+              if belongsToSession and not sessionFpiFound
+                  sessionFpi := market.structureFromFpi(fpiEvent, market.FAMILY_NONE, "SESSION-FPI", "SESSION_FPI")
+                  sessionFpiFound := true
+                  sessionDirection := fpiEvent.direction
+                  phase := PHASE_SESSION
+                  if drawFpiBoxes
+                      box sessionBox = newZone(fpiEvent.sourceTime, time + (sessionEndMinute(currentSession) - nowMinute) * 60000, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentSession) + " SESSION FPI", math.max(65, zoneTransparency - 12))
+                      array.push(drawings, sessionBox)
+          '''
+          new_session_fpi_block = '''    bool belongsToSession = fpiEvent.middleMinute >= sessionStartMinute(currentSession) and fpiEvent.middleMinute < sessionEndMinute(currentSession)
+              if belongsToSession and not sessionFpiFound
+                  sessionFpi := market.structureFromFpi(fpiEvent, market.FAMILY_NONE, "SESSION-FPI", "SESSION_FPI")
+                  sessionFpiFound := true
+                  sessionDirection := fpiEvent.direction
+                  phase := PHASE_SESSION
+                  if drawFpiBoxes
+                      box sessionBox = newZone(fpiEvent.sourceTime, time + (sessionEndMinute(currentSession) - nowMinute) * 60000, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentSession) + " SESSION FPI", math.max(65, zoneTransparency - 12))
+                      array.push(drawings, sessionBox)
+
+              // Preserve the first FPI formed inside each session's first Macro:
+              // AM 9:50-10:10, Lunch 11:50-12:10, PM 1:50-2:10 by default.
+              bool belongsToFirstMacro = belongsToSession and fpiEvent.middleMinute >= macroStartMinute(currentSession) and fpiEvent.middleMinute < macroEndMinute(currentSession)
+              if belongsToFirstMacro and not macroFpiFound
+                  macroFpi := market.structureFromFpi(fpiEvent, market.FAMILY_NONE, "MACRO-FPI", "FIRST_MACRO_FPI")
+                  macroFpiFound := true
+                  if drawFpiBoxes
+                      box macroBox = newZone(fpiEvent.sourceTime, time + (sessionEndMinute(currentSession) - nowMinute) * 60000, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentSession) + " FIRST MACRO FPI", math.max(65, zoneTransparency - 8))
+                      array.push(drawings, macroBox)
+          '''
+          if old_session_fpi_block not in text:
+              raise RuntimeError('session FPI discovery anchor not found')
+          text = text.replace(old_session_fpi_block, new_session_fpi_block, 1)
+
+          authority_anchor = '''// =============================================================================
+          // Persistent local-window FPI authority
+          '''
+          dual_break_block = '''// =============================================================================
+          // Minimal Session + first-Macro break latch
+          // This does not add a standalone entry. It only releases the existing
+          // current-window Judas OB/BOLO -> aligned IMB -> later-retest sequence.
+          // Existing delivery, recovery, stops, targets and entry priorities remain unchanged.
+          // =============================================================================
+          bool sessionBrokenOppositeNow = sessionFpiFound and sessionDirection != market.DIR_NONE and (sessionDirection == market.DIR_LONG ? close < sessionFpi.bottom : close > sessionFpi.top)
+          bool macroBrokenOppositeNow = macroFpiFound and sessionDirection != market.DIR_NONE and (sessionDirection == market.DIR_LONG ? close < macroFpi.bottom : close > macroFpi.top)
+          bool dualFpiBreakNow = enableSessionMacroBreakJudas and confirmedBar and sessionBrokenOppositeNow and macroBrokenOppositeNow
+
+          if dualFpiBreakNow and not sessionMacroBreakLatched
+              sessionMacroBreakLatched := true
+              sessionMacroBreakDirection := -sessionDirection
+              sessionMacroBreakBar := bar_index
+              phase := PHASE_JUDAS
+              if judasStartWindow < 0
+                  judasStartWindow := currentWindow
+              // Latch tactical authority without disturbing the current window's
+              // stored OB/BOLO and IMB candidates.
+              windowAuthority := sessionMacroBreakDirection
+
+          // =============================================================================
+          // Persistent local-window FPI authority
+          '''
+          if authority_anchor not in text:
+              raise RuntimeError('authority insertion anchor not found')
+          text = text.replace(authority_anchor, dual_break_block, 1)
+
+          old_judas_gate = '''judasSequenceSignal = market.newSignal()
+          if phase == PHASE_JUDAS and enableJudasTrades and not judasEntryTaken and currentWindow >= 0 and windowFirstFpiFound and windowAuthority == judasDirection and judasDirection != market.DIR_NONE and not judasWindowResolved
+              alignedJudasFoundation = judasDirection == market.DIR_LONG ? bullFoundationCandidate : bearFoundationCandidate
+          '''
+          new_judas_gate = '''judasSequenceSignal = market.newSignal()
+          bool localJudasAuthority = windowFirstFpiFound and windowAuthority == judasDirection
+          bool dualFpiJudasAuthority = sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection and not na(sessionMacroBreakBar) and bar_index >= sessionMacroBreakBar
+          bool judasAuthorityPass = localJudasAuthority or dualFpiJudasAuthority
+          if phase == PHASE_JUDAS and enableJudasTrades and not judasEntryTaken and currentWindow >= 0 and judasAuthorityPass and judasDirection != market.DIR_NONE and not judasWindowResolved
+              alignedJudasFoundation = judasDirection == market.DIR_LONG ? bullFoundationCandidate : bearFoundationCandidate
+          '''
+          if old_judas_gate not in text:
+              raise RuntimeError('Judas authority gate anchor not found')
+          text = text.replace(old_judas_gate, new_judas_gate, 1)
+
+          old_recovery_transition = '''    if entryIsRecovery
+                  phase := PHASE_DELIVERY
+                  judasCompleted := true
+              else if entryIsJudas
+          '''
+          new_recovery_transition = '''    if entryIsRecovery
+                  phase := PHASE_DELIVERY
+                  judasCompleted := true
+                  sessionMacroBreakLatched := false
+                  sessionMacroBreakDirection := market.DIR_NONE
+                  sessionMacroBreakBar := na
+              else if entryIsJudas
+          '''
+          if old_recovery_transition not in text:
+              raise RuntimeError('recovery transition anchor not found')
+          text = text.replace(old_recovery_transition, new_recovery_transition, 1)
+
+          old_diagnostics = '''plot(sessionFpiFound ? sessionDirection : na, "Session FPI Direction", display = display.data_window)
+          plot(phase, "Campaign Phase", display = display.data_window)
+          '''
+          new_diagnostics = '''plot(sessionFpiFound ? sessionDirection : na, "Session FPI Direction", display = display.data_window)
+          plot(macroFpiFound ? macroFpi.direction : na, "First Macro FPI Direction", display = display.data_window)
+          plot(macroFpiFound ? macroFpi.top : na, "First Macro FPI Top", display = display.data_window)
+          plot(macroFpiFound ? macroFpi.bottom : na, "First Macro FPI Bottom", display = display.data_window)
+          plot(sessionMacroBreakLatched ? sessionMacroBreakDirection : 0, "Session + Macro Break Judas Authority", display = display.data_window)
+          plot(sessionMacroBreakBar, "Session + Macro Break Bar", display = display.data_window)
+          plot(phase, "Campaign Phase", display = display.data_window)
+          '''
+          if old_diagnostics not in text:
+              raise RuntimeError('diagnostic anchor not found')
+          text = text.replace(old_diagnostics, new_diagnostics, 1)
+
+          required = [
+              'shorttitle = "PO3E945M"',
+              'enableSessionMacroBreakJudas',
+              'macroFpiFound',
+              'bool dualFpiBreakNow',
+              'windowAuthority := sessionMacroBreakDirection',
+              'bool dualFpiJudasAuthority',
+              'Session + Macro Break Judas Authority',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError(f'missing required patch marker: {marker}')
+
+          target.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit generated strategy to working branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_4_5_Dual_FPI_Judas_Authority.pine
+          git commit -m "Add V9.4.5 minimal Session plus Macro break Judas authority"
+          git push origin HEAD:enigma-v9-3-window-narrative
