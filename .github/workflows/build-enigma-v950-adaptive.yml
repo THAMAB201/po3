@@ -1,0 +1,496 @@
+name: Build Enigma V9.5.0 Adaptive Narrative
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-enigma-v950-adaptive.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Patch profitable V9.4.6 baseline
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_6_Interval_Close_Hold.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.4.6 Interval Close Hold",\n    shorttitle = "PO3E946H",',
+              '"PO3 MMXM Enigma V9.5.0 Adaptive Narrative Arbiter",\n    shorttitle = "PO3E950A",',
+              1,
+          )
+
+          old_structure_inputs = '''bool allowAlignedImb = input.bool(true, "Allow Same-Direction IMB Respect", group = G_STRUCTURE)
+          bool allowOpposingFpiDisrespect = input.bool(true, "Allow Opposing 30m FPI Disrespect Toward Session Bias", group = G_STRUCTURE)
+
+          string G_PROTOCOL = "Narrative / State Protocol"
+          bool enableJudasTrades = input.bool(true, "Allow Judas Trade Against Session FPI", group = G_PROTOCOL)
+          bool requireLaterWindowForRecovery = input.bool(true, "Recovery Requires A Later 30m Window", group = G_PROTOCOL)
+          bool requireDirectionalCandle = input.bool(true, "IMB Confirmation Requires Directional Candle", group = G_PROTOCOL)'''
+          new_structure_inputs = '''bool allowAlignedImb = input.bool(true, "Allow Same-Direction IMB Respect", group = G_STRUCTURE)
+          bool allowOpposingFpiDisrespect = input.bool(true, "Allow Opposing 30m FPI Disrespect Toward Session Bias", group = G_STRUCTURE)
+          bool preferConsecutiveBodySeries = input.bool(true, "Prioritize Consecutive Body-Series OB / BOLO", group = G_STRUCTURE, tooltip = "Uses the complete consecutive opposing candle-body series before displacement. Wick penetration does not invalidate it; only a body close beyond the series body boundary does.")
+          bool enableBgobEntries = input.bool(true, "Allow Confirmed 30m FPI BGOB Entries", group = G_STRUCTURE)
+          bool enableMacroBgobEntries = input.bool(true, "Allow Confirmed First-Macro BGOB Entries", group = G_STRUCTURE)
+          float bgobMaxPenetrationPercent = input.float(50.0, "BGOB Maximum Body Penetration %", minval = 1.0, maxval = 99.0, step = 1.0, group = G_STRUCTURE)
+
+          string G_PROTOCOL = "Narrative / State Protocol"
+          bool enableJudasTrades = input.bool(true, "Allow Judas Trade Against Session FPI", group = G_PROTOCOL)
+          bool requireLaterWindowForRecovery = input.bool(true, "Recovery Requires A Later 30m Window", group = G_PROTOCOL)
+          bool requireDirectionalCandle = input.bool(true, "IMB Confirmation Requires Directional Candle", group = G_PROTOCOL)
+          bool enableAdaptiveNarrativeArbiter = input.bool(true, "Adaptive One-Narrative-Per-Window Arbiter", group = G_PROTOCOL, tooltip = "Each 30-minute window may build both sides, but once a complete foundation-plus-support narrative is established, the opposite side is blocked until that narrative invalidates or the next interval begins.")
+          bool cancelStaleJudasOnSessionReclaim = input.bool(true, "Cancel Stale Judas Authority After Session + Macro Reclaim", group = G_PROTOCOL)
+          bool oneTradePerWindow = input.bool(true, "Maximum One New Entry Per 30m Window", group = G_PROTOCOL)'''
+          if old_structure_inputs not in text:
+              raise RuntimeError('structure input anchor not found')
+          text = text.replace(old_structure_inputs, new_structure_inputs, 1)
+
+          old_constants = '''int WINDOW_SEARCH_FOUNDATION = 0
+          int WINDOW_FOUNDATION_CONFIRMED = 1
+          int WINDOW_IMB_ARMED = 2
+          int WINDOW_RECOVERY_CONFIRMED = 3
+          int WINDOW_INVALID = 4'''
+          new_constants = '''int WINDOW_SEARCH_FOUNDATION = 0
+          int WINDOW_FOUNDATION_CONFIRMED = 1
+          int WINDOW_IMB_ARMED = 2
+          int WINDOW_RECOVERY_CONFIRMED = 3
+          int WINDOW_INVALID = 4
+
+          int NARRATIVE_SEARCH = 0
+          int NARRATIVE_SESSION_BUILD = 1
+          int NARRATIVE_JUDAS_BUILD = 2
+          int NARRATIVE_SESSION_LOCKED = 3
+          int NARRATIVE_JUDAS_LOCKED = 4
+          int NARRATIVE_RESOLVED = 5'''
+          if old_constants not in text:
+              raise RuntimeError('constant anchor not found')
+          text = text.replace(old_constants, new_constants, 1)
+
+          old_selector = '''selectMoreExtreme(primary, fallback, int direction) =>
+              result = market.newStructure()
+              if primary.active
+                  copyStructure(result, primary)
+              if fallback.active and (not result.active or moreExtreme(fallback.top, fallback.bottom, result.top, result.bottom, direction))
+                  copyStructure(result, fallback)
+              result
+
+          regularBodyObSeed'''
+          new_selector = '''selectMoreExtreme(primary, fallback, int direction) =>
+              result = market.newStructure()
+              if primary.active
+                  copyStructure(result, primary)
+              if fallback.active and (not result.active or moreExtreme(fallback.top, fallback.bottom, result.top, result.bottom, direction))
+                  copyStructure(result, fallback)
+              result
+
+          selectFoundationSeed(librarySeed, bodySeriesSeed, int direction) =>
+              result = market.newStructure()
+              if preferConsecutiveBodySeries and bodySeriesSeed.active
+                  copyStructure(result, bodySeriesSeed)
+                  result.reason := "PRIORITY_CONSECUTIVE_BODY_SERIES_OB_BOLO"
+              else
+                  result := selectMoreExtreme(librarySeed, bodySeriesSeed, direction)
+              result
+
+          regularBodyObSeed'''
+          if old_selector not in text:
+              raise RuntimeError('selector helper anchor not found')
+          text = text.replace(old_selector, new_selector, 1)
+
+          old_regular_reason = 'market.setStructure(result, direction, market.FAMILY_PRIMARY_OB, zoneTop, zoneBottom, zoneTop, zoneBottom, invalidation, extremeBar, extremeTime, requiredWindow, extremeTime, market.STATUS_ARMED, direction == market.DIR_LONG ? "OB-BULL-01" : "OB-BEAR-01", "CONSECUTIVE_BODY_ORDER_BLOCK")'
+          new_regular_reason = 'market.setStructure(result, direction, market.FAMILY_PRIMARY_OB, zoneTop, zoneBottom, zoneTop, zoneBottom, invalidation, extremeBar, extremeTime, requiredWindow, extremeTime, market.STATUS_ARMED, direction == market.DIR_LONG ? "SERIES-OB-BOLO-BULL-01" : "SERIES-OB-BOLO-BEAR-01", "CONSECUTIVE_BODY_SERIES_OB_BOLO_WICK_TOLERANT")'
+          if old_regular_reason not in text:
+              raise RuntimeError('regular body reason anchor not found')
+          text = text.replace(old_regular_reason, new_regular_reason, 1)
+
+          old_foundation_end = '''    confirmedNow
+
+          bindImbCandidate'''
+          new_foundation_end = '''    confirmedNow
+
+          bgobSeedFromFpi(fpiEvent, int requiredWindow, string scopeText) =>
+              result = market.newStructure()
+              int direction = fpiEvent.direction
+              float bodyTop = math.max(open, close)
+              float bodyBottom = math.min(open, close)
+              float invalidation = direction == market.DIR_LONG ? low : high
+              market.setStructure(result, direction, market.FAMILY_PRIMARY_OB, bodyTop, bodyBottom, bodyTop, bodyBottom, invalidation, bar_index, time, requiredWindow, time, market.STATUS_ARMED, direction == market.DIR_LONG ? "BGOB-BULL-01" : "BGOB-BEAR-01", scopeText)
+              result
+
+          bgobFailureThreshold(structure, int direction) =>
+              float range = math.max(syminfo.mintick, structure.top - structure.bottom)
+              direction == market.DIR_LONG ? structure.top - range * bgobMaxPenetrationPercent / 100.0 : structure.bottom + range * bgobMaxPenetrationPercent / 100.0
+
+          updateBgobLifecycle(structure, int direction) =>
+              bool confirmedNow = false
+              if structure.active and not structure.used and structure.status != market.STATUS_INVALID
+                  float failureThreshold = bgobFailureThreshold(structure, direction)
+                  bool bodyPenetrationFailure = structure.status != market.STATUS_ARMED and (direction == market.DIR_LONG ? close < failureThreshold : close > failureThreshold)
+                  if bodyPenetrationFailure
+                      structure.status := market.STATUS_INVALID
+                      structure.active := false
+                      structure.used := true
+                      structure.touching := false
+                  else if structure.status == market.STATUS_ARMED
+                      bool closedBeyond = direction == market.DIR_LONG ? close > structure.top : close < structure.bottom
+                      if closedBeyond
+                          structure.status := market.STATUS_BROKEN
+                          structure.breakBar := bar_index
+                          structure.touching := false
+                  else if structure.status == market.STATUS_BROKEN and not na(structure.breakBar) and bar_index > structure.breakBar
+                      bool retested = market.overlaps(structure.top, structure.bottom, high, low)
+                      if retested
+                          structure.touching := true
+                      bool directionalRespect = direction == market.DIR_LONG ? structure.touching and close > structure.top and close > open : structure.touching and close < structure.bottom and close < open
+                      if directionalRespect
+                          structure.status := market.STATUS_CONFIRMED
+                          structure.confirmBar := bar_index
+                          structure.touching := false
+                          confirmedNow := true
+              confirmedNow
+
+          confirmedBgobSignal(structure, int direction, string ruleId, string reasonText) =>
+              signal = market.newSignal()
+              if structure.active and structure.status == market.STATUS_CONFIRMED and structure.confirmBar == bar_index
+                  signal := market.makeSignal(direction, market.FAMILY_30M_REVERSAL, structure.top, structure.bottom, structure.invalidation, structure.sourceBar, structure.sourceTime, currentWindow, structure.sourceBar, true, false, ruleId, reasonText)
+              signal
+
+          bindImbCandidate'''
+          if old_foundation_end not in text:
+              raise RuntimeError('BGOB helper insertion anchor not found')
+          text = text.replace(old_foundation_end, new_foundation_end, 1)
+
+          old_session_state = '''var bool sessionMacroBreakLatched = false
+          var int sessionMacroBreakDirection = market.DIR_NONE
+          var int sessionMacroBreakBar = na'''
+          new_session_state = '''var bool sessionMacroBreakLatched = false
+          var int sessionMacroBreakDirection = market.DIR_NONE
+          var int sessionMacroBreakBar = na
+          var macroBgob = market.newStructure()'''
+          if old_session_state not in text:
+              raise RuntimeError('session state anchor not found')
+          text = text.replace(old_session_state, new_session_state, 1)
+
+          old_window_state = '''var bool windowResolved = false
+          var int windowAuthority = market.DIR_NONE
+          var bool windowFpiDisrespectedTowardSession = false
+
+          var bullImbCandidate = market.newStructure()'''
+          new_window_state = '''var bool windowResolved = false
+          var int windowAuthority = market.DIR_NONE
+          var bool windowFpiDisrespectedTowardSession = false
+          var int windowNarrative = NARRATIVE_SEARCH
+          var int windowNarrativeDirection = market.DIR_NONE
+          var int windowNarrativeLockBar = na
+          var bool windowTradeTaken = false
+
+          var bullBgobCandidate = market.newStructure()
+          var bearBgobCandidate = market.newStructure()
+          var bullImbCandidate = market.newStructure()'''
+          if old_window_state not in text:
+              raise RuntimeError('window state anchor not found')
+          text = text.replace(old_window_state, new_window_state, 1)
+
+          old_new_session_reset = '''    sessionMacroBreakLatched := false
+              sessionMacroBreakDirection := market.DIR_NONE
+              sessionMacroBreakBar := na'''
+          new_new_session_reset = '''    sessionMacroBreakLatched := false
+              sessionMacroBreakDirection := market.DIR_NONE
+              sessionMacroBreakBar := na
+              macroBgob := market.newStructure()'''
+          if old_new_session_reset not in text:
+              raise RuntimeError('new session reset anchor not found')
+          text = text.replace(old_new_session_reset, new_new_session_reset, 1)
+
+          old_new_window_reset = '''    windowResolved := false
+              windowAuthority := market.DIR_NONE
+              windowFpiDisrespectedTowardSession := false
+              bullImbCandidate := market.newStructure()'''
+          new_new_window_reset = '''    windowResolved := false
+              windowAuthority := market.DIR_NONE
+              windowFpiDisrespectedTowardSession := false
+              windowNarrative := NARRATIVE_SEARCH
+              windowNarrativeDirection := market.DIR_NONE
+              windowNarrativeLockBar := na
+              windowTradeTaken := false
+              bullBgobCandidate := market.newStructure()
+              bearBgobCandidate := market.newStructure()
+              bullImbCandidate := market.newStructure()'''
+          if old_new_window_reset not in text:
+              raise RuntimeError('new window reset anchor not found')
+          text = text.replace(old_new_window_reset, new_new_window_reset, 1)
+
+          old_macro_draw = '''        if drawFpiBoxes
+                  box macroBox = newZone(fpiEvent.sourceTime, time + (sessionEndMinute(currentSession) - nowMinute) * 60000, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentSession) + " FIRST MACRO FPI", math.max(65, zoneTransparency - 8))
+                  array.push(drawings, macroBox)
+
+              // Persist every current-window imbalance'''
+          new_macro_draw = '''        if drawFpiBoxes
+                  box macroBox = newZone(fpiEvent.sourceTime, time + (sessionEndMinute(currentSession) - nowMinute) * 60000, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentSession) + " FIRST MACRO FPI", math.max(65, zoneTransparency - 8))
+                  array.push(drawings, macroBox)
+
+              // Every FPI may seed its third-candle BGOB. It is not an entry until
+              // price closes beyond it, later retests it and closes directionally
+              // back outside. First-Macro BGOB state persists across local windows.
+              if enableBgobEntries
+                  bgobSeed = bgobSeedFromFpi(fpiEvent, currentWindow, belongsToFirstMacro ? "FIRST_MACRO_FPI_BGOB" : "CURRENT_WINDOW_FPI_BGOB")
+                  targetBgob = fpiEvent.direction == market.DIR_LONG ? bullBgobCandidate : bearBgobCandidate
+                  bool bgobAccepted = not windowResolved and armMoreExtreme(targetBgob, bgobSeed, fpiEvent.direction)
+                  if bgobAccepted and drawStructureBoxes
+                      box bgobBox = newZone(time, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, bgobSeed.top, bgobSeed.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish BGOB Seed" : "Bearish BGOB Seed", math.max(72, zoneTransparency - 6))
+                      array.push(drawings, bgobBox)
+                  if belongsToFirstMacro and enableMacroBgobEntries and not macroBgob.active
+                      copyStructure(macroBgob, bgobSeed)
+                      macroBgob.sourceWindow := currentWindow
+                      macroBgob.reason := "PERSISTENT_FIRST_MACRO_BGOB"
+
+              // Persist every current-window imbalance'''
+          if old_macro_draw not in text:
+              raise RuntimeError('macro BGOB insertion anchor not found')
+          text = text.replace(old_macro_draw, new_macro_draw, 1)
+
+          old_combined_seed = 'combinedSeed = selectMoreExtreme(librarySeed, regularSeed, fpiEvent.direction)'
+          new_combined_seed = 'combinedSeed = selectFoundationSeed(librarySeed, regularSeed, fpiEvent.direction)'
+          if old_combined_seed not in text:
+              raise RuntimeError('combined seed anchor not found')
+          text = text.replace(old_combined_seed, new_combined_seed, 1)
+
+          old_after_bear_confirm = '''if bearFoundationConfirmedNow
+              bearFoundationCandidate.ruleId := "OB-BOLO-BEAR-02"
+              bearFoundationCandidate.reason := "CURRENT_WINDOW_BEARISH_OB_BOLO_DISPLACEMENT_CONFIRM"
+              if drawStructureBoxes
+                  box bearConfirmedBox = newZone(bearFoundationCandidate.sourceTime, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, bearFoundationCandidate.top, bearFoundationCandidate.bottom, market.DIR_SHORT, "Confirmed Bearish OB / BOLO", math.max(72, zoneTransparency - 8))
+                  array.push(drawings, bearConfirmedBox)
+
+          // =============================================================================
+          // Minimal Session + first-Macro break latch'''
+          new_after_bear_confirm = '''if bearFoundationConfirmedNow
+              bearFoundationCandidate.ruleId := "OB-BOLO-BEAR-02"
+              bearFoundationCandidate.reason := "CURRENT_WINDOW_BEARISH_OB_BOLO_DISPLACEMENT_CONFIRM"
+              if drawStructureBoxes
+                  box bearConfirmedBox = newZone(bearFoundationCandidate.sourceTime, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, bearFoundationCandidate.top, bearFoundationCandidate.bottom, market.DIR_SHORT, "Confirmed Bearish OB / BOLO", math.max(72, zoneTransparency - 8))
+                  array.push(drawings, bearConfirmedBox)
+
+          bool bullBgobConfirmedNow = enableBgobEntries and updateBgobLifecycle(bullBgobCandidate, market.DIR_LONG)
+          bool bearBgobConfirmedNow = enableBgobEntries and updateBgobLifecycle(bearBgobCandidate, market.DIR_SHORT)
+          bool macroBgobConfirmedNow = enableMacroBgobEntries and macroBgob.active and updateBgobLifecycle(macroBgob, macroBgob.direction)
+
+          // =============================================================================
+          // Minimal Session + first-Macro break latch'''
+          if old_after_bear_confirm not in text:
+              raise RuntimeError('BGOB lifecycle insertion anchor not found')
+          text = text.replace(old_after_bear_confirm, new_after_bear_confirm, 1)
+
+          old_recovery_signal_end = '''            recoverySignal := market.makeSignal(recoveryDirection, market.FAMILY_30M_REVERSAL, recoveryFoundation.top, recoveryFoundation.bottom, recoveryFoundation.invalidation, recoveryFoundation.sourceBar, recoveryFoundation.sourceTime, currentWindow, recoveryFoundation.sourceBar, true, phase == PHASE_JUDAS, recoveryRule, "CONFIRMED_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT")
+
+
+          // =============================================================================
+          // Sequenced Judas narrative'''
+          new_recovery_signal_end = '''            recoverySignal := market.makeSignal(recoveryDirection, market.FAMILY_30M_REVERSAL, recoveryFoundation.top, recoveryFoundation.bottom, recoveryFoundation.invalidation, recoveryFoundation.sourceBar, recoveryFoundation.sourceTime, currentWindow, recoveryFoundation.sourceBar, true, phase == PHASE_JUDAS, recoveryRule, "CONFIRMED_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT")
+
+          recoveryBgobSignal = market.newSignal()
+          if recoveryWindowEligible and not windowResolved and enableBgobEntries
+              alignedWindowBgob = recoveryDirection == market.DIR_LONG ? bullBgobCandidate : bearBgobCandidate
+              if alignedWindowBgob.active and alignedWindowBgob.status == market.STATUS_CONFIRMED and alignedWindowBgob.confirmBar == bar_index
+                  recoveryBgobSignal := confirmedBgobSignal(alignedWindowBgob, recoveryDirection, recoveryDirection == market.DIR_LONG ? "WINDOW-BGOB-BUY" : "WINDOW-BGOB-SELL", "CONFIRMED_CURRENT_WINDOW_FPI_BGOB_RETEST_RESPECT")
+              if not recoveryBgobSignal.valid and enableMacroBgobEntries and macroBgob.active and macroBgob.direction == recoveryDirection and macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index
+                  recoveryBgobSignal := confirmedBgobSignal(macroBgob, recoveryDirection, recoveryDirection == market.DIR_LONG ? "MACRO-BGOB-BUY" : "MACRO-BGOB-SELL", "CONFIRMED_FIRST_MACRO_BGOB_RETEST_RESPECT")
+
+          // =============================================================================
+          // Sequenced Judas narrative'''
+          if old_recovery_signal_end not in text:
+              raise RuntimeError('recovery BGOB insertion anchor not found')
+          text = text.replace(old_recovery_signal_end, new_recovery_signal_end, 1)
+
+          old_judas_signal_end = '''                    judasSequenceSignal := market.makeSignal(judasDirection, market.FAMILY_30M_REVERSAL, judasFoundation.top, judasFoundation.bottom, judasFoundation.invalidation, judasFoundation.sourceBar, judasFoundation.sourceTime, currentWindow, judasFoundation.sourceBar, true, false, judasRule, "ONE_JUDAS_SEQUENCE_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST")
+
+          // =============================================================================
+          // Irreversible IMB lifecycle'''
+          new_judas_signal_end = '''                    judasSequenceSignal := market.makeSignal(judasDirection, market.FAMILY_30M_REVERSAL, judasFoundation.top, judasFoundation.bottom, judasFoundation.invalidation, judasFoundation.sourceBar, judasFoundation.sourceTime, currentWindow, judasFoundation.sourceBar, true, false, judasRule, "ONE_JUDAS_SEQUENCE_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST")
+
+          judasBgobSignal = market.newSignal()
+          if phase == PHASE_JUDAS and enableJudasTrades and not judasEntryTaken and judasAuthorityPass and not judasWindowResolved and enableBgobEntries
+              alignedJudasBgob = judasDirection == market.DIR_LONG ? bullBgobCandidate : bearBgobCandidate
+              if alignedJudasBgob.active and alignedJudasBgob.status == market.STATUS_CONFIRMED and alignedJudasBgob.confirmBar == bar_index
+                  judasBgobSignal := confirmedBgobSignal(alignedJudasBgob, judasDirection, judasDirection == market.DIR_LONG ? "JUDAS-BGOB-BUY" : "JUDAS-BGOB-SELL", "CONFIRMED_CURRENT_WINDOW_BGOB_WITH_JUDAS_AUTHORITY")
+              if not judasBgobSignal.valid and enableMacroBgobEntries and macroBgob.active and macroBgob.direction == judasDirection and macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index
+                  judasBgobSignal := confirmedBgobSignal(macroBgob, judasDirection, judasDirection == market.DIR_LONG ? "JUDAS-MACRO-BGOB-BUY" : "JUDAS-MACRO-BGOB-SELL", "CONFIRMED_FIRST_MACRO_BGOB_WITH_JUDAS_AUTHORITY")
+
+          // Cancel an old tactical break after price fully reclaims both controlling
+          // FPIs toward Session direction. This prevents an old Judas latch from
+          // authorizing counter-bias trades in later rebuilt windows.
+          bool sessionReclaimedNow = sessionFpiFound and sessionDirection != market.DIR_NONE and (sessionDirection == market.DIR_LONG ? close > sessionFpi.top : close < sessionFpi.bottom)
+          bool macroReclaimedNow = not macroFpiFound or (sessionDirection == market.DIR_LONG ? close > macroFpi.top : close < macroFpi.bottom)
+          bool sessionNarrativeBuilding = recoveryFoundation.active and recoverySupport.active or recoveryBgobSignal.valid
+          if cancelStaleJudasOnSessionReclaim and sessionMacroBreakLatched and confirmedBar and ((sessionReclaimedNow and macroReclaimedNow) or sessionNarrativeBuilding)
+              sessionMacroBreakLatched := false
+              sessionMacroBreakDirection := market.DIR_NONE
+              sessionMacroBreakBar := na
+              if not tradeIsJudas
+                  phase := PHASE_SESSION
+
+          // =============================================================================
+          // Irreversible IMB lifecycle'''
+          if old_judas_signal_end not in text:
+              raise RuntimeError('judas BGOB insertion anchor not found')
+          text = text.replace(old_judas_signal_end, new_judas_signal_end, 1)
+
+          old_selection = '''// =============================================================================
+          // Signal selection
+          // =============================================================================
+          selectedSignal = market.newSignal()
+          if recoverySignal.valid
+              selectedSignal := market.copySignal(recoverySignal)
+          else if judasSequenceSignal.valid
+              selectedSignal := market.copySignal(judasSequenceSignal)'''
+          new_selection = '''// =============================================================================
+          // Adaptive narrative arbitration
+          // A complete foundation + bound IMB, or a broken/confirmed BGOB, locks
+          // one direction for the active interval. The opposite narrative cannot
+          // steal the window unless the lock invalidates or the next window begins.
+          // =============================================================================
+          sessionCandidateSignal = market.newSignal()
+          if recoverySignal.valid
+              sessionCandidateSignal := market.copySignal(recoverySignal)
+          else if recoveryBgobSignal.valid
+              sessionCandidateSignal := market.copySignal(recoveryBgobSignal)
+
+          judasCandidateSignal = market.newSignal()
+          if judasSequenceSignal.valid
+              judasCandidateSignal := market.copySignal(judasSequenceSignal)
+          else if judasBgobSignal.valid
+              judasCandidateSignal := market.copySignal(judasBgobSignal)
+
+          bool sessionBgobBuilding = sessionDirection == market.DIR_LONG ? bullBgobCandidate.active and (bullBgobCandidate.status == market.STATUS_BROKEN or bullBgobCandidate.status == market.STATUS_CONFIRMED) : bearBgobCandidate.active and (bearBgobCandidate.status == market.STATUS_BROKEN or bearBgobCandidate.status == market.STATUS_CONFIRMED)
+          bool judasBgobBuilding = judasDirection == market.DIR_LONG ? bullBgobCandidate.active and (bullBgobCandidate.status == market.STATUS_BROKEN or bullBgobCandidate.status == market.STATUS_CONFIRMED) : bearBgobCandidate.active and (bearBgobCandidate.status == market.STATUS_BROKEN or bearBgobCandidate.status == market.STATUS_CONFIRMED)
+          bool sessionBuildReady = recoverySupport.active or sessionBgobBuilding or enableMacroBgobEntries and macroBgob.active and macroBgob.direction == sessionDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED)
+          bool judasBuildReady = judasSupport.active or judasBgobBuilding or enableMacroBgobEntries and macroBgob.active and macroBgob.direction == judasDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED)
+
+          if enableAdaptiveNarrativeArbiter and windowNarrative == NARRATIVE_SEARCH
+              if sessionBuildReady and not judasBuildReady
+                  windowNarrative := NARRATIVE_SESSION_LOCKED
+                  windowNarrativeDirection := sessionDirection
+                  windowNarrativeLockBar := bar_index
+              else if judasBuildReady and not sessionBuildReady
+                  windowNarrative := NARRATIVE_JUDAS_LOCKED
+                  windowNarrativeDirection := judasDirection
+                  windowNarrativeLockBar := bar_index
+              else if sessionBuildReady and judasBuildReady
+                  bool authorityFavorsJudas = windowAuthority == judasDirection or sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection
+                  windowNarrative := authorityFavorsJudas ? NARRATIVE_JUDAS_LOCKED : NARRATIVE_SESSION_LOCKED
+                  windowNarrativeDirection := authorityFavorsJudas ? judasDirection : sessionDirection
+                  windowNarrativeLockBar := bar_index
+
+          bool sessionLockInvalid = windowNarrative == NARRATIVE_SESSION_LOCKED and not recoverySupport.active and not sessionBgobBuilding and not (macroBgob.active and macroBgob.direction == sessionDirection and macroBgob.status != market.STATUS_INVALID)
+          bool judasLockInvalid = windowNarrative == NARRATIVE_JUDAS_LOCKED and not judasSupport.active and not judasBgobBuilding and not (macroBgob.active and macroBgob.direction == judasDirection and macroBgob.status != market.STATUS_INVALID)
+          if enableAdaptiveNarrativeArbiter and not windowTradeTaken and (sessionLockInvalid or judasLockInvalid)
+              windowNarrative := NARRATIVE_SEARCH
+              windowNarrativeDirection := market.DIR_NONE
+              windowNarrativeLockBar := na
+
+          // =============================================================================
+          // Signal selection
+          // =============================================================================
+          selectedSignal = market.newSignal()
+          if enableAdaptiveNarrativeArbiter
+              if windowNarrative == NARRATIVE_SESSION_LOCKED and sessionCandidateSignal.valid
+                  selectedSignal := market.copySignal(sessionCandidateSignal)
+              else if windowNarrative == NARRATIVE_JUDAS_LOCKED and judasCandidateSignal.valid
+                  selectedSignal := market.copySignal(judasCandidateSignal)
+              else if windowNarrative == NARRATIVE_SEARCH
+                  if sessionCandidateSignal.valid and not judasCandidateSignal.valid
+                      selectedSignal := market.copySignal(sessionCandidateSignal)
+                  else if judasCandidateSignal.valid and not sessionCandidateSignal.valid
+                      selectedSignal := market.copySignal(judasCandidateSignal)
+                  else if sessionCandidateSignal.valid and judasCandidateSignal.valid
+                      bool finalAuthorityFavorsJudas = windowAuthority == judasDirection or sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection
+                      selectedSignal := finalAuthorityFavorsJudas ? market.copySignal(judasCandidateSignal) : market.copySignal(sessionCandidateSignal)
+          else
+              if sessionCandidateSignal.valid
+                  selectedSignal := market.copySignal(sessionCandidateSignal)
+              else if judasCandidateSignal.valid
+                  selectedSignal := market.copySignal(judasCandidateSignal)'''
+          if old_selection not in text:
+              raise RuntimeError('signal selection replacement anchor not found')
+          text = text.replace(old_selection, new_selection, 1)
+
+          old_can_open = 'bool canOpenOrReverse = freshEntry or oppositeToTrade'
+          new_can_open = 'bool canOpenOrReverse = (freshEntry or oppositeToTrade) and (not oneTradePerWindow or not windowTradeTaken)'
+          if old_can_open not in text:
+              raise RuntimeError('one trade gate anchor not found')
+          text = text.replace(old_can_open, new_can_open, 1)
+
+          old_order_state = '''    structureDisrespectedDuringWindow := false
+              structureDisrespectWindow := currentWindow
+
+              if entryIsRecovery'''
+          new_order_state = '''    structureDisrespectedDuringWindow := false
+              structureDisrespectWindow := currentWindow
+              windowTradeTaken := true
+              windowResolved := true
+              judasWindowResolved := true
+              windowNarrative := NARRATIVE_RESOLVED
+              windowNarrativeDirection := selectedSignal.direction
+
+              if entryIsRecovery'''
+          if old_order_state not in text:
+              raise RuntimeError('order narrative state anchor not found')
+          text = text.replace(old_order_state, new_order_state, 1)
+
+          old_plots = '''plot(windowState, "Window Narrative State", display = display.data_window)
+          plot(windowFirstFpiFound ? windowFirstFpiDirection : na, "Window First FPI Direction", display = display.data_window)'''
+          new_plots = '''plot(windowState, "Window Recovery State", display = display.data_window)
+          plot(windowNarrative, "Adaptive Window Narrative", display = display.data_window)
+          plot(windowNarrativeDirection, "Adaptive Narrative Direction", display = display.data_window)
+          plot(windowNarrativeLockBar, "Adaptive Narrative Lock Bar", display = display.data_window)
+          plot(windowTradeTaken ? 1 : 0, "Window Entry Already Used", display = display.data_window)
+          plot(bullBgobCandidate.status, "Bull Window BGOB Status", display = display.data_window)
+          plot(bearBgobCandidate.status, "Bear Window BGOB Status", display = display.data_window)
+          plot(macroBgob.status, "First Macro BGOB Status", display = display.data_window)
+          plot(windowFirstFpiFound ? windowFirstFpiDirection : na, "Window First FPI Direction", display = display.data_window)'''
+          if old_plots not in text:
+              raise RuntimeError('diagnostic plot anchor not found')
+          text = text.replace(old_plots, new_plots, 1)
+
+          required = [
+              'shorttitle = "PO3E950A"',
+              'selectFoundationSeed',
+              'PRIORITY_CONSECUTIVE_BODY_SERIES_OB_BOLO',
+              'updateBgobLifecycle',
+              'PERSISTENT_FIRST_MACRO_BGOB',
+              'Adaptive One-Narrative-Per-Window Arbiter',
+              'NARRATIVE_SESSION_LOCKED',
+              'JUDAS-MACRO-BGOB-SELL',
+              'windowTradeTaken := true',
+              'Cancel Stale Judas Authority After Session + Macro Reclaim',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError(f'missing patch marker: {marker}')
+
+          target.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit generated full strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine
+          git commit -m "Add V9.5.0 adaptive narrative arbiter"
+          git push origin HEAD:enigma-v9-3-window-narrative
