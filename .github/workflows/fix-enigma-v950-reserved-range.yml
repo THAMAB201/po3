@@ -1,0 +1,61 @@
+name: Fix Enigma V9.5.0 Reserved Range
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/triggers/fix-enigma-v950-range.txt
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout strategy branch
+        uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Patch Pine reserved identifier
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''bgobFailureThreshold(structure, int direction) =>
+              float range = math.max(syminfo.mintick, structure.top - structure.bottom)
+              direction == market.DIR_LONG ? structure.top - range * bgobMaxPenetrationPercent / 100.0 : structure.bottom + range * bgobMaxPenetrationPercent / 100.0'''
+
+          new = '''bgobFailureThreshold(structure, int direction) =>
+              float zoneRange = math.max(syminfo.mintick, structure.top - structure.bottom)
+              direction == market.DIR_LONG ? structure.top - zoneRange * bgobMaxPenetrationPercent / 100.0 : structure.bottom + zoneRange * bgobMaxPenetrationPercent / 100.0'''
+
+          if old not in text:
+              raise RuntimeError('Expected reserved range block not found')
+
+          text = text.replace(old, new, 1)
+
+          if 'float range =' in text:
+              raise RuntimeError('Reserved range identifier still exists')
+          if 'float zoneRange =' not in text:
+              raise RuntimeError('zoneRange replacement missing')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit corrected full strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine
+          git diff --cached --quiet && exit 0
+          git commit -m "Fix Pine reserved range identifier in V9.5.0"
+          git push origin HEAD:enigma-v9-3-window-narrative
