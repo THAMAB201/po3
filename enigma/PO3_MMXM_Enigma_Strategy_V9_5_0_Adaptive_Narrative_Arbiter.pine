@@ -271,8 +271,8 @@ bgobSeedFromFpi(fpiEvent, int requiredWindow, string scopeText) =>
     result
 
 bgobFailureThreshold(structure, int direction) =>
-    float range = math.max(syminfo.mintick, structure.top - structure.bottom)
-    direction == market.DIR_LONG ? structure.top - range * bgobMaxPenetrationPercent / 100.0 : structure.bottom + range * bgobMaxPenetrationPercent / 100.0
+    float zoneRange = math.max(syminfo.mintick, structure.top - structure.bottom)
+    direction == market.DIR_LONG ? structure.top - zoneRange * bgobMaxPenetrationPercent / 100.0 : structure.bottom + zoneRange * bgobMaxPenetrationPercent / 100.0
 
 updateBgobLifecycle(structure, int direction) =>
     bool confirmedNow = false
