@@ -1,0 +1,207 @@
+name: Build Enigma V9.4.6 Interval Hold
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-enigma-v946-interval-hold.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Patch profitable V9.4.5 baseline
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_5_Dual_FPI_Judas_Authority.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_6_Interval_Close_Hold.pine')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.4.5 Dual FPI Judas Authority",\n    shorttitle = "PO3E945M",',
+              '"PO3 MMXM Enigma V9.4.6 Interval Close Hold",\n    shorttitle = "PO3E946H",',
+              1,
+          )
+
+          old_risk = '''bool judasUsesNoFixedTarget = input.bool(true, "Judas Holds Until Valid Later-Window Recovery", group = G_RISK)
+          bool deliveryUsesFixedTarget = input.bool(false, "Delivery Uses Fixed Target", group = G_RISK)
+          int structuralBufferTicks = input.int(1, "Structure Stop Buffer (ticks)", minval = 0, maxval = 20, group = G_RISK)'''
+          new_risk = '''bool judasUsesNoFixedTarget = input.bool(true, "Judas Holds Until Valid Later-Window Recovery", group = G_RISK)
+          bool deliveryUsesFixedTarget = input.bool(false, "Delivery Uses Fixed Target", group = G_RISK)
+          bool deferStructuralExitToIntervalClose = input.bool(true, "Defer Structural Exit Until 30m Close", group = G_RISK, tooltip = "Preserves the V9.4.5 entry engine. Intrabar protection remains the Maximum Stop only. A delivery foundation body-close failure is evaluated on the final one-minute close of the active 30-minute interval. Judas still holds until a valid later-window recovery or the hard Maximum Stop.")
+          int structuralBufferTicks = input.int(1, "Structure Stop Buffer (ticks)", minval = 0, maxval = 20, group = G_RISK)'''
+          if old_risk not in text:
+              raise RuntimeError('risk input anchor not found')
+          text = text.replace(old_risk, new_risk, 1)
+
+          old_stop_helper = '''boundedStop(int direction, float entryPrice, float structuralInvalidation) =>
+              float fixedStop = direction == market.DIR_LONG ? entryPrice - maximumStopPoints : entryPrice + maximumStopPoints
+              float buffered = na(structuralInvalidation) ? na : direction == market.DIR_LONG ? structuralInvalidation - structuralBufferTicks * syminfo.mintick : structuralInvalidation + structuralBufferTicks * syminfo.mintick
+              direction == market.DIR_LONG and not na(buffered) and buffered < entryPrice ? math.max(fixedStop, buffered) : direction == market.DIR_SHORT and not na(buffered) and buffered > entryPrice ? math.min(fixedStop, buffered) : fixedStop'''
+          new_stop_helper = '''maximumRiskStop(int direction, float entryPrice) =>
+              direction == market.DIR_LONG ? entryPrice - maximumStopPoints : entryPrice + maximumStopPoints
+
+          boundedStop(int direction, float entryPrice, float structuralInvalidation) =>
+              float fixedStop = maximumRiskStop(direction, entryPrice)
+              float buffered = na(structuralInvalidation) ? na : direction == market.DIR_LONG ? structuralInvalidation - structuralBufferTicks * syminfo.mintick : structuralInvalidation + structuralBufferTicks * syminfo.mintick
+              direction == market.DIR_LONG and not na(buffered) and buffered < entryPrice ? math.max(fixedStop, buffered) : direction == market.DIR_SHORT and not na(buffered) and buffered > entryPrice ? math.min(fixedStop, buffered) : fixedStop'''
+          if old_stop_helper not in text:
+              raise RuntimeError('stop helper anchor not found')
+          text = text.replace(old_stop_helper, new_stop_helper, 1)
+
+          old_trade_state = '''var float tradeInvalidation = na
+          var string activeRule = ""
+          var int observedClosedTrades = 0
+          var bool orderSubmittedNow = false
+          var int submittedDirectionNow = market.DIR_NONE'''
+          new_trade_state = '''var float tradeInvalidation = na
+          var string activeRule = ""
+          var int observedClosedTrades = 0
+          var bool orderSubmittedNow = false
+          var int submittedDirectionNow = market.DIR_NONE
+          var bool structureDisrespectedDuringWindow = false
+          var int structureDisrespectWindow = -1'''
+          if old_trade_state not in text:
+              raise RuntimeError('trade state anchor not found')
+          text = text.replace(old_trade_state, new_trade_state, 1)
+
+          old_time = '''bool newSession = inDecisionSession and currentSession != activeSessionId
+          bool newWindow = inDecisionSession and currentWindow >= 0 and currentWindow != activeWindow
+          int forceFlatAt = forceFlatHour * 60 + forceFlatMinute'''
+          new_time = '''bool newSession = inDecisionSession and currentSession != activeSessionId
+          bool newWindow = inDecisionSession and currentWindow >= 0 and currentWindow != activeWindow
+          int currentWindowEndMinute = currentWindow >= 0 ? market.periodEndMinute(currentWindow) : -1
+          bool finalMinuteOfWindow = currentWindowEndMinute > 0 and nowMinute == currentWindowEndMinute - 1
+          int forceFlatAt = forceFlatHour * 60 + forceFlatMinute'''
+          if old_time not in text:
+              raise RuntimeError('time anchor not found')
+          text = text.replace(old_time, new_time, 1)
+
+          old_window_reset = '''    judasSupportConfirmBar := na
+              judasWindowResolved := false
+              if drawWindowDividers and currentWindow >= 0'''
+          new_window_reset = '''    judasSupportConfirmBar := na
+              judasWindowResolved := false
+              structureDisrespectedDuringWindow := false
+              structureDisrespectWindow := currentWindow
+              if drawWindowDividers and currentWindow >= 0'''
+          if old_window_reset not in text:
+              raise RuntimeError('window reset anchor not found')
+          text = text.replace(old_window_reset, new_window_reset, 1)
+
+          old_closed_reset = '''        tradeTarget := na
+                  tradeInvalidation := na
+                  activeRule := ""'''
+          new_closed_reset = '''        tradeTarget := na
+                  tradeInvalidation := na
+                  activeRule := ""
+                  structureDisrespectedDuringWindow := false
+                  structureDisrespectWindow := -1'''
+          if old_closed_reset not in text:
+              raise RuntimeError('closed reset anchor not found')
+          text = text.replace(old_closed_reset, new_closed_reset, 1)
+
+          old_stop_value = 'float stopValue = boundedStop(selectedSignal.direction, entryPrice, selectedSignal.invalidation)'
+          new_stop_value = 'float stopValue = deferStructuralExitToIntervalClose ? maximumRiskStop(selectedSignal.direction, entryPrice) : boundedStop(selectedSignal.direction, entryPrice, selectedSignal.invalidation)'
+          if old_stop_value not in text:
+              raise RuntimeError('order stop anchor not found')
+          text = text.replace(old_stop_value, new_stop_value, 1)
+
+          old_entry_state = '''    tradeInvalidation := selectedSignal.invalidation
+              activeRule := selectedSignal.ruleId
+
+              if entryIsRecovery'''
+          new_entry_state = '''    tradeInvalidation := selectedSignal.invalidation
+              activeRule := selectedSignal.ruleId
+              structureDisrespectedDuringWindow := false
+              structureDisrespectWindow := currentWindow
+
+              if entryIsRecovery'''
+          if old_entry_state not in text:
+              raise RuntimeError('entry state anchor not found')
+          text = text.replace(old_entry_state, new_entry_state, 1)
+
+          old_management = '''    // Judas ignores incomplete local failures and holds until a later-window
+              // recovery narrative completes. Delivery respects its frozen foundation.
+              if not tradeIsJudas
+                  bool controllerDisrespected = tradeDirection == market.DIR_LONG ? close < tradeInvalidation : close > tradeInvalidation
+                  if controllerDisrespected
+                      strategy.close("ENIGMA", comment = "FOUNDATION_DISRESPECT")
+
+              if forceFlat and nowMinute >= forceFlatAt'''
+          new_management = '''    // The hard Maximum Stop remains live intrabar. When interval deferral is
+              // enabled, a closer structural invalidation cannot stop the trade early.
+              // Delivery is judged on the final one-minute close of each 30-minute
+              // interval. A temporary intrainterval body close can recover before
+              // the interval ends. Judas continues to ignore incomplete local failure
+              // and holds for the later-window recovery narrative.
+              if not tradeIsJudas
+                  bool controllerDisrespected = tradeDirection == market.DIR_LONG ? close < tradeInvalidation : close > tradeInvalidation
+                  if deferStructuralExitToIntervalClose
+                      if controllerDisrespected
+                          structureDisrespectedDuringWindow := true
+                          structureDisrespectWindow := currentWindow
+                      if finalMinuteOfWindow
+                          bool intervalCloseStillInvalid = tradeDirection == market.DIR_LONG ? close < tradeInvalidation : close > tradeInvalidation
+                          if structureDisrespectedDuringWindow and structureDisrespectWindow == currentWindow and intervalCloseStillInvalid
+                              strategy.close("ENIGMA", comment = "INTERVAL_END_FOUNDATION_DISRESPECT")
+                          structureDisrespectedDuringWindow := false
+                          structureDisrespectWindow := -1
+                  else if controllerDisrespected
+                      strategy.close("ENIGMA", comment = "FOUNDATION_DISRESPECT")
+
+              if forceFlat and nowMinute >= forceFlatAt'''
+          if old_management not in text:
+              raise RuntimeError('position management anchor not found')
+          text = text.replace(old_management, new_management, 1)
+
+          old_diagnostics = '''plot(tradeActive ? tradeDirection : 0, "Active Trade Direction", display = display.data_window)
+          plot(tradeActive ? tradeStop : na, "Active Stop", display = display.data_window)
+          plot(tradeActive ? tradeTarget : na, "Active Target", display = display.data_window)'''
+          new_diagnostics = '''plot(tradeActive ? tradeDirection : 0, "Active Trade Direction", display = display.data_window)
+          plot(finalMinuteOfWindow ? 1 : 0, "Final Minute Of 30m Window", display = display.data_window)
+          plot(structureDisrespectedDuringWindow ? 1 : 0, "Structural Disrespect Pending Window Close", display = display.data_window)
+          plot(structureDisrespectWindow, "Pending Structural Exit Window", display = display.data_window)
+          plot(tradeActive ? tradeStop : na, "Active Hard Maximum Stop", display = display.data_window)
+          plot(tradeActive ? tradeInvalidation : na, "Frozen Structural Invalidation", display = display.data_window)
+          plot(tradeActive ? tradeTarget : na, "Active Target", display = display.data_window)'''
+          if old_diagnostics not in text:
+              raise RuntimeError('diagnostic anchor not found')
+          text = text.replace(old_diagnostics, new_diagnostics, 1)
+
+          required = [
+              'shorttitle = "PO3E946H"',
+              'deferStructuralExitToIntervalClose',
+              'maximumRiskStop',
+              'finalMinuteOfWindow',
+              'INTERVAL_END_FOUNDATION_DISRESPECT',
+              'Active Hard Maximum Stop',
+              'Frozen Structural Invalidation',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError(f'missing patch marker: {marker}')
+
+          target.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit generated full strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_4_6_Interval_Close_Hold.pine
+          git commit -m "Add V9.4.6 interval-close hold management"
+          git push origin HEAD:enigma-v9-3-window-narrative
