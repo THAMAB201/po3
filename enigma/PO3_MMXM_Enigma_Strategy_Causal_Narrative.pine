@@ -1,0 +1,711 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © SunovaBeach
+//@version=6
+strategy(
+    "PO3 MMXM Enigma Causal Narrative",
+    shorttitle = "PO3E943C",
+    overlay = true,
+    max_labels_count = 500,
+    max_boxes_count = 500,
+    max_lines_count = 500,
+    max_bars_back = 500,
+    initial_capital = 100000,
+    pyramiding = 0,
+    process_orders_on_close = true,
+    calc_on_order_fills = false,
+    calc_on_every_tick = false,
+    use_bar_magnifier = true,
+    fill_orders_on_standard_ohlc = true,
+    default_qty_type = strategy.fixed,
+    default_qty_value = 5,
+    margin_long = 1,
+    margin_short = 1,
+    commission_type = strategy.commission.cash_per_contract,
+    commission_value = 0
+)
+
+import SunovaBeach/PO3MMXMMarketModel/3 as market
+
+// =============================================================================
+// Inputs
+// =============================================================================
+string G_ENGINE = "Engine"
+bool enableBot = input.bool(true, "Enable Strategy Orders", group = G_ENGINE)
+float orderQuantity = input.float(5.0, "Order Quantity", minval = 1.0, step = 1.0, group = G_ENGINE)
+bool tradeDecisionSessionsOnly = input.bool(true, "Orders Only During Decision Sessions", group = G_ENGINE)
+bool forceFlat = input.bool(true, "Force Flat", group = G_ENGINE)
+int forceFlatHour = input.int(16, "Force-Flat Hour", minval = 9, maxval = 17, group = G_ENGINE)
+int forceFlatMinute = input.int(50, "Force-Flat Minute", minval = 0, maxval = 59, group = G_ENGINE)
+
+string G_SESSION = "Decision Sessions (New York)"
+int amStartHour = input.int(9, "AM Hour", minval = 0, maxval = 23, group = G_SESSION, inline = "AM")
+int amStartMinute = input.int(30, "Minute", minval = 0, maxval = 59, group = G_SESSION, inline = "AM")
+int lunchStartHour = input.int(11, "Lunch Hour", minval = 0, maxval = 23, group = G_SESSION, inline = "L")
+int lunchStartMinute = input.int(30, "Minute", minval = 0, maxval = 59, group = G_SESSION, inline = "L")
+int pmStartHour = input.int(13, "PM Hour", minval = 0, maxval = 23, group = G_SESSION, inline = "PM")
+int pmStartMinute = input.int(30, "Minute", minval = 0, maxval = 59, group = G_SESSION, inline = "PM")
+bool ignoreSessionBoundaryGapFpi = input.bool(false, "Stocks/RTH: Ignore FPI Crossing Session Start", group = G_SESSION)
+
+string G_RISK = "Risk / Campaign Management"
+float maximumStopPoints = input.float(50.0, "Maximum Stop (points)", minval = 0.25, step = 0.25, group = G_RISK)
+float deliveryTargetPoints = input.float(150.0, "Delivery Target (points)", minval = 0.25, step = 0.25, group = G_RISK)
+bool judasUsesNoFixedTarget = input.bool(true, "Judas Holds Until Valid Later-Window Recovery", group = G_RISK)
+bool deliveryUsesFixedTarget = input.bool(false, "Delivery Uses Fixed Target", group = G_RISK)
+int structuralBufferTicks = input.int(1, "Structure Stop Buffer (ticks)", minval = 0, maxval = 20, group = G_RISK)
+
+string G_STRUCTURE = "One-Minute Narrative Structure"
+int obSearchBars = input.int(30, "OB / BOLO Search Bars", minval = 2, maxval = 30, group = G_STRUCTURE)
+bool enableLibraryBolo = input.bool(true, "Use Market-Model BOLO Detection", group = G_STRUCTURE)
+bool enableRegularBodyOb = input.bool(true, "Use Regular Body OB Fallback", group = G_STRUCTURE)
+bool allowAlignedImb = input.bool(true, "Allow Same-Direction IMB Respect", group = G_STRUCTURE)
+bool allowOpposingImbReclaim = input.bool(true, "Allow Opposing IMB Reclaim", group = G_STRUCTURE)
+bool requireWindowExtremeFoundation = input.bool(true, "Foundation Must Be At Current Window Extreme", group = G_STRUCTURE)
+
+string G_PROTOCOL = "Narrative / State Protocol"
+bool enableJudasTrades = input.bool(true, "Allow Judas Trade Against Session FPI", group = G_PROTOCOL)
+bool requireLaterWindowForRecovery = input.bool(true, "Recovery Requires A Later 30m Window", group = G_PROTOCOL)
+bool requireDirectionalCandle = input.bool(true, "Confirmation Requires Directional Candle", group = G_PROTOCOL)
+
+string G_VISUAL = "Visuals"
+bool showAllDrawings = input.bool(false, "Show All Drawings", group = G_VISUAL)
+bool showFpiBoxes = input.bool(true, "Show FPI Boxes", group = G_VISUAL)
+bool showStructureBoxes = input.bool(true, "Show OB / BOLO / IMB", group = G_VISUAL)
+bool showSignals = input.bool(true, "Show Entry / Exit Labels", group = G_VISUAL)
+bool showWindowDividers = input.bool(true, "Show 30m Dividers", group = G_VISUAL)
+int zoneTransparency = input.int(86, "Zone Transparency", minval = 60, maxval = 95, group = G_VISUAL)
+
+bool drawFpiBoxes = showAllDrawings and showFpiBoxes
+bool drawStructureBoxes = showAllDrawings and showStructureBoxes
+bool drawSignals = showAllDrawings and showSignals
+bool drawWindowDividers = showAllDrawings and showWindowDividers
+
+// =============================================================================
+// Narrative states
+// =============================================================================
+int PHASE_WAIT = 0
+int PHASE_SESSION = 1
+int PHASE_JUDAS = 2
+int PHASE_DELIVERY = 3
+
+int WINDOW_SEARCH_FOUNDATION = 0
+int WINDOW_FOUNDATION_ARMED = 1
+int WINDOW_FOUNDATION_CONFIRMED = 2
+int WINDOW_IMB_ARMED = 3
+int WINDOW_ENTRY_CONFIRMED = 4
+int WINDOW_INVALID = 5
+
+// =============================================================================
+// Helpers
+// =============================================================================
+minuteValue(int h, int m) => h * 60 + m
+amStart() => minuteValue(amStartHour, amStartMinute)
+lunchStart() => minuteValue(lunchStartHour, lunchStartMinute)
+pmStart() => minuteValue(pmStartHour, pmStartMinute)
+
+sessionId(int minuteOfDay) =>
+    minuteOfDay >= amStart() and minuteOfDay < lunchStart() ? 0 :
+     minuteOfDay >= lunchStart() and minuteOfDay < pmStart() ? 1 :
+     minuteOfDay >= pmStart() and minuteOfDay < market.SESSION_END_MINUTE ? 2 : -1
+
+sessionStartMinute(int id) => id == 0 ? amStart() : id == 1 ? lunchStart() : id == 2 ? pmStart() : -1
+sessionEndMinute(int id) => id == 0 ? lunchStart() : id == 1 ? pmStart() : id == 2 ? market.SESSION_END_MINUTE : -1
+sessionName(int id) => id == 0 ? "AM" : id == 1 ? "LUNCH" : id == 2 ? "PM" : "OFF"
+
+minuteFromTimestamp(int timestampValue) =>
+    na(timestampValue) ? -1 : hour(timestampValue, "America/New_York") * 60 + minute(timestampValue, "America/New_York")
+
+windowFromTimestamp(int timestampValue) =>
+    market.windowFromMinute(minuteFromTimestamp(timestampValue))
+
+sideColor(int direction) =>
+    direction == market.DIR_LONG ? color.green : direction == market.DIR_SHORT ? color.red : color.gray
+
+newZone(int leftTime, int rightTime, float top, float bottom, int direction, string zoneText, int transparency) =>
+    box.new(left = leftTime, top = top, right = rightTime, bottom = bottom, xloc = xloc.bar_time, bgcolor = color.new(sideColor(direction), transparency), border_color = color.new(sideColor(direction), math.max(0, transparency - 25)), text = zoneText, text_color = color.new(color.white, 20), text_size = size.tiny)
+
+copyStructure(target, source) =>
+    target.active := source.active
+    target.used := source.used
+    target.direction := source.direction
+    target.family := source.family
+    target.top := source.top
+    target.bottom := source.bottom
+    target.bodyTop := source.bodyTop
+    target.bodyBottom := source.bodyBottom
+    target.invalidation := source.invalidation
+    target.sourceBar := source.sourceBar
+    target.sourceTime := source.sourceTime
+    target.sourceWindow := source.sourceWindow
+    target.parentId := source.parentId
+    target.status := source.status
+    target.breakBar := source.breakBar
+    target.confirmBar := source.confirmBar
+    target.retestCount := source.retestCount
+    target.touching := source.touching
+    target.ruleId := source.ruleId
+    target.reason := source.reason
+    0
+
+sameSource(first, second) =>
+    not na(first.sourceBar) and not na(second.sourceBar) and first.sourceBar == second.sourceBar and first.sourceTime == second.sourceTime
+
+moreExtreme(float candidateTop, float candidateBottom, float currentTop, float currentBottom, int direction) =>
+    na(currentTop) or na(currentBottom) or direction == market.DIR_LONG and candidateBottom < currentBottom or direction == market.DIR_SHORT and candidateTop > currentTop
+
+regularBodyObSeed(int direction, int searchBars, int requiredWindow) =>
+    result = market.newStructure()
+    float bestMetric = na
+    for i = 1 to searchBars
+        int candleWindow = windowFromTimestamp(time[i])
+        bool oppositeCandle = direction == market.DIR_LONG ? close[i] < open[i] : close[i] > open[i]
+        float bodyTop = math.max(open[i], close[i])
+        float bodyBottom = math.min(open[i], close[i])
+        float metric = direction == market.DIR_LONG ? low[i] : high[i]
+        bool better = na(bestMetric) or direction == market.DIR_LONG and metric < bestMetric or direction == market.DIR_SHORT and metric > bestMetric
+        if oppositeCandle and candleWindow == requiredWindow and better
+            bestMetric := metric
+            market.setStructure(result, direction, market.FAMILY_PRIMARY_OB, bodyTop, bodyBottom, bodyTop, bodyBottom, direction == market.DIR_LONG ? low[i] : high[i], bar_index - i, time[i], requiredWindow, time[i], market.STATUS_ARMED, direction == market.DIR_LONG ? "OB-BULL-01" : "OB-BEAR-01", "REGULAR_BODY_ORDER_BLOCK")
+    result
+
+selectMoreExtreme(primary, fallback, int direction) =>
+    result = market.newStructure()
+    if primary.active
+        copyStructure(result, primary)
+    if fallback.active and (not result.active or moreExtreme(fallback.top, fallback.bottom, result.top, result.bottom, direction))
+        copyStructure(result, fallback)
+    result
+
+foundationBodyInvalid(structure, int direction) =>
+    direction == market.DIR_LONG ? close < structure.bottom : close > structure.top
+
+foundationAtWindowExtreme(structure, int direction, float currentWindowHigh, float currentWindowLow) =>
+    not requireWindowExtremeFoundation or direction == market.DIR_LONG and structure.invalidation <= currentWindowLow + syminfo.mintick or direction == market.DIR_SHORT and structure.invalidation >= currentWindowHigh - syminfo.mintick
+
+armFoundation(target, source, int direction, int displacementBar) =>
+    bool replace = source.active and (not target.active or target.status == market.STATUS_INVALID or moreExtreme(source.top, source.bottom, target.top, target.bottom, direction))
+    if replace
+        copyStructure(target, source)
+        target.direction := direction
+        target.family := market.FAMILY_PRIMARY_OB
+        target.status := market.STATUS_BROKEN
+        target.breakBar := displacementBar
+        target.confirmBar := na
+        target.used := false
+        target.touching := false
+        target.ruleId := direction == market.DIR_LONG ? "OB-BOLO-BULL-ARMED" : "OB-BOLO-BEAR-ARMED"
+        target.reason := "EXTREME_OB_BOLO_DISPLACEMENT_ARMED"
+    replace
+
+confirmFoundationAfterRetest(structure, int direction) =>
+    bool confirmedNow = false
+    if structure.active and not structure.used and structure.status == market.STATUS_BROKEN and not na(structure.breakBar) and bar_index > structure.breakBar
+        if foundationBodyInvalid(structure, direction)
+            structure.status := market.STATUS_INVALID
+            structure.active := false
+            structure.used := true
+            structure.touching := false
+            structure.reason := "FOUNDATION_BODY_CLOSE_DISRESPECT"
+        else
+            bool retest = market.overlaps(structure.top, structure.bottom, high, low)
+            if retest
+                structure.touching := true
+            bool directionalPass = not requireDirectionalCandle or (direction == market.DIR_LONG ? close > open : close < open)
+            bool outsideClose = direction == market.DIR_LONG ? close > structure.top : close < structure.bottom
+            if structure.touching and outsideClose and directionalPass
+                structure.status := market.STATUS_CONFIRMED
+                structure.confirmBar := bar_index
+                structure.ruleId := direction == market.DIR_LONG ? "OB-BOLO-BULL-02" : "OB-BOLO-BEAR-02"
+                structure.reason := "EXTREME_OB_BOLO_RETEST_AND_BODY_CLOSE_RESPECT"
+                confirmedNow := true
+    confirmedNow
+
+armImbCandidate(target, source, int originalDirection) =>
+    bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED
+    bool replace = sourceLive and (not target.active or target.used or target.status == market.STATUS_INVALID or moreExtreme(source.top, source.bottom, target.top, target.bottom, originalDirection))
+    if replace
+        copyStructure(target, source)
+        target.direction := originalDirection
+        target.family := market.FAMILY_IMB_RETEST
+        target.status := market.STATUS_ARMED
+        target.used := false
+        target.confirmBar := na
+        target.touching := false
+    replace
+
+invalidateSourceImbForever(structure, int originalDirection, string reasonText) =>
+    bool invalidNow = structure.active and not structure.used and structure.status == market.STATUS_ARMED and (originalDirection == market.DIR_LONG ? close < structure.bottom : close > structure.top)
+    if invalidNow
+        structure.status := market.STATUS_INVALID
+        structure.active := false
+        structure.used := true
+        structure.touching := false
+        structure.reason := reasonText
+    invalidNow
+
+bindSupport(target, source, foundation, int targetDirection, int requiredWindow) =>
+    bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED
+    bool foundationLive = foundation.active and foundation.status == market.STATUS_CONFIRMED and not na(foundation.breakBar) and not na(foundation.confirmBar)
+    bool causal = sourceLive and foundationLive and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and not na(source.breakBar) and source.breakBar >= foundation.breakBar
+    bool replace = causal and (not target.active or target.used or target.status == market.STATUS_INVALID or moreExtreme(source.top, source.bottom, target.top, target.bottom, targetDirection))
+    if replace
+        copyStructure(target, source)
+        target.direction := targetDirection
+        target.family := market.FAMILY_POST_OB_IMB
+        target.parentId := foundation.sourceBar
+        target.sourceWindow := requiredWindow
+        target.invalidation := targetDirection == market.DIR_LONG ? target.bottom : target.top
+        target.status := market.STATUS_ARMED
+        target.used := false
+        target.confirmBar := na
+        target.touching := false
+        target.ruleId := targetDirection == market.DIR_LONG ? "BOUND-IMB-BUY" : "BOUND-IMB-SELL"
+        target.reason := source.direction == targetDirection ? "ALIGNED_IMB_BOUND_TO_VALIDATED_FOUNDATION" : "OPPOSING_IMB_RECLAIM_BOUND_TO_VALIDATED_FOUNDATION"
+    replace
+
+boundOriginalDirection(structure) =>
+    structure.reason == "OPPOSING_IMB_RECLAIM_BOUND_TO_VALIDATED_FOUNDATION" ? -structure.direction : structure.direction
+
+invalidateBoundSupportForever(structure, string reasonText) =>
+    structure.status := market.STATUS_INVALID
+    structure.active := false
+    structure.used := true
+    structure.touching := false
+    structure.reason := reasonText
+    0
+
+consumeStructure(structure, string reasonText) =>
+    structure.active := false
+    structure.used := true
+    structure.touching := false
+    structure.reason := reasonText
+    0
+
+confirmBoundSupport(structure, foundation, int targetDirection) =>
+    bool confirmedNow = false
+    if structure.active and not structure.used and structure.status == market.STATUS_ARMED and foundation.active and foundation.status == market.STATUS_CONFIRMED
+        int eligibleAfter = int(math.max(nz(foundation.confirmBar, bar_index), nz(structure.breakBar, bar_index)))
+        if bar_index > eligibleAfter
+            int originalDirection = boundOriginalDirection(structure)
+            bool originalDisrespect = originalDirection == market.DIR_LONG ? close < structure.bottom : close > structure.top
+            bool touch = market.overlaps(structure.top, structure.bottom, high, low)
+            if touch
+                structure.touching := true
+            bool directionalPass = not requireDirectionalCandle or (targetDirection == market.DIR_LONG ? close > open : close < open)
+            bool outsideClose = targetDirection == market.DIR_LONG ? close > structure.top : close < structure.bottom
+            bool fullConfirmation = structure.touching and outsideClose and directionalPass
+            if originalDisrespect and not fullConfirmation
+                invalidateBoundSupportForever(structure, "BOUND_IMB_DISRESPECTED_BEFORE_VALID_CONFIRMATION")
+            else if fullConfirmation
+                structure.status := market.STATUS_CONFIRMED
+                structure.confirmBar := bar_index
+                confirmedNow := true
+    confirmedNow
+
+boundedStop(int direction, float entryPrice, float structuralInvalidation) =>
+    float fixedStop = direction == market.DIR_LONG ? entryPrice - maximumStopPoints : entryPrice + maximumStopPoints
+    float buffered = na(structuralInvalidation) ? na : direction == market.DIR_LONG ? structuralInvalidation - structuralBufferTicks * syminfo.mintick : structuralInvalidation + structuralBufferTicks * syminfo.mintick
+    direction == market.DIR_LONG and not na(buffered) and buffered < entryPrice ? math.max(fixedStop, buffered) : direction == market.DIR_SHORT and not na(buffered) and buffered > entryPrice ? math.min(fixedStop, buffered) : fixedStop
+
+// =============================================================================
+// Persistent state
+// =============================================================================
+var sessionFpi = market.newStructure()
+var bool sessionFpiFound = false
+var int sessionDirection = market.DIR_NONE
+var int phase = PHASE_WAIT
+var int activeSessionId = -1
+var int judasStartWindow = -1
+var bool judasCompleted = false
+
+var int activeWindow = -1
+var int windowState = WINDOW_SEARCH_FOUNDATION
+var bool windowFirstFpiFound = false
+var int windowFirstFpiDirection = market.DIR_NONE
+var float windowFirstFpiTop = na
+var float windowFirstFpiBottom = na
+var float windowHigh = na
+var float windowLow = na
+var bool recoveryWindowResolved = false
+var bool judasWindowResolved = false
+
+var bullImbCandidate = market.newStructure()
+var bearImbCandidate = market.newStructure()
+var bullFoundationCandidate = market.newStructure()
+var bearFoundationCandidate = market.newStructure()
+var recoveryFoundation = market.newStructure()
+var recoverySupport = market.newStructure()
+var int recoveryFoundationConfirmBar = na
+var int recoverySupportConfirmBar = na
+var judasFoundation = market.newStructure()
+var judasSupport = market.newStructure()
+var int judasFoundationConfirmBar = na
+var int judasSupportConfirmBar = na
+
+var bool tradeActive = false
+var bool tradeIsJudas = false
+var int tradeDirection = market.DIR_NONE
+var int tradeEntryBar = na
+var float tradeEntryPrice = na
+var float tradeStop = na
+var float tradeTarget = na
+var float tradeInvalidation = na
+var string activeRule = ""
+var int observedClosedTrades = 0
+var bool orderSubmittedNow = false
+var int submittedDirectionNow = market.DIR_NONE
+
+var array<box> drawings = array.new<box>()
+var array<label> labels = array.new<label>()
+var array<line> dividers = array.new<line>()
+
+// =============================================================================
+// Time and resets
+// =============================================================================
+bool isOneMinute = timeframe.isminutes and timeframe.multiplier == 1
+bool confirmedBar = barstate.isconfirmed
+int nowMinute = market.minuteOfDay(0)
+int currentSession = sessionId(nowMinute)
+int currentWindow = market.windowFromMinute(nowMinute)
+bool scheduleValid = amStart() < lunchStart() and lunchStart() < pmStart() and pmStart() < market.SESSION_END_MINUTE
+bool inDecisionSession = scheduleValid and currentSession >= 0
+bool newSession = inDecisionSession and currentSession != activeSessionId
+bool newWindow = inDecisionSession and currentWindow >= 0 and currentWindow != activeWindow
+int forceFlatAt = forceFlatHour * 60 + forceFlatMinute
+
+orderSubmittedNow := false
+submittedDirectionNow := market.DIR_NONE
+
+if newSession
+    activeSessionId := currentSession
+    sessionFpi := market.newStructure()
+    sessionFpiFound := false
+    sessionDirection := market.DIR_NONE
+    phase := PHASE_WAIT
+    judasStartWindow := -1
+    judasCompleted := false
+
+if newWindow or newSession
+    activeWindow := currentWindow
+    windowState := WINDOW_SEARCH_FOUNDATION
+    windowFirstFpiFound := false
+    windowFirstFpiDirection := market.DIR_NONE
+    windowFirstFpiTop := na
+    windowFirstFpiBottom := na
+    windowHigh := high
+    windowLow := low
+    recoveryWindowResolved := false
+    judasWindowResolved := false
+    bullImbCandidate := market.newStructure()
+    bearImbCandidate := market.newStructure()
+    bullFoundationCandidate := market.newStructure()
+    bearFoundationCandidate := market.newStructure()
+    recoveryFoundation := market.newStructure()
+    recoverySupport := market.newStructure()
+    recoveryFoundationConfirmBar := na
+    recoverySupportConfirmBar := na
+    judasFoundation := market.newStructure()
+    judasSupport := market.newStructure()
+    judasFoundationConfirmBar := na
+    judasSupportConfirmBar := na
+    if drawWindowDividers and currentWindow >= 0
+        line divider = line.new(bar_index, low, bar_index, high, extend = extend.both, color = color.new(color.gray, 82), style = line.style_dotted)
+        array.push(dividers, divider)
+
+if inDecisionSession and currentWindow >= 0
+    windowHigh := na(windowHigh) ? high : math.max(windowHigh, high)
+    windowLow := na(windowLow) ? low : math.min(windowLow, low)
+
+// =============================================================================
+// Closed-trade reconciliation
+// =============================================================================
+if strategy.closedtrades > observedClosedTrades
+    for i = observedClosedTrades to strategy.closedtrades - 1
+        float exitPrice = strategy.closedtrades.exit_price(i)
+        float closedSize = strategy.closedtrades.size(i)
+        int closedDirection = closedSize > 0 ? market.DIR_LONG : market.DIR_SHORT
+        if drawSignals
+            label exitLabel = label.new(bar_index, exitPrice, closedDirection == market.DIR_LONG ? "close buy" : "close sell", style = label.style_label_left, color = color.black, textcolor = color.white, size = size.small)
+            array.push(labels, exitLabel)
+    observedClosedTrades := strategy.closedtrades
+    if strategy.position_size == 0
+        tradeActive := false
+        tradeIsJudas := false
+        tradeDirection := market.DIR_NONE
+        tradeEntryBar := na
+        tradeEntryPrice := na
+        tradeStop := na
+        tradeTarget := na
+        tradeInvalidation := na
+        activeRule := ""
+
+// =============================================================================
+// FPI, IMB and foundation discovery
+// =============================================================================
+fpiEvent = market.detectFpi()
+int firstFpiMinute = fpiEvent.valid ? market.minuteOfDay(2) : -1
+int eventSession = fpiEvent.valid ? sessionId(fpiEvent.middleMinute) : -1
+int eventSessionStart = sessionStartMinute(eventSession)
+bool crossesSessionStart = eventSession >= 0 and firstFpiMinute < eventSessionStart
+bool passesGapFilter = not ignoreSessionBoundaryGapFpi or not crossesSessionStart
+bool fpiWhollyCurrentWindow = fpiEvent.valid and market.windowFromMinute(firstFpiMinute) == currentWindow and market.windowFromMinute(fpiEvent.middleMinute) == currentWindow
+bool eligibleFpi = isOneMinute and confirmedBar and inDecisionSession and currentWindow >= 0 and fpiEvent.valid and eventSession == currentSession and passesGapFilter and fpiWhollyCurrentWindow
+
+eventImb = market.newStructure()
+
+if eligibleFpi
+    if not windowFirstFpiFound
+        windowFirstFpiFound := true
+        windowFirstFpiDirection := fpiEvent.direction
+        windowFirstFpiTop := fpiEvent.top
+        windowFirstFpiBottom := fpiEvent.bottom
+        if drawFpiBoxes
+            int rightTime = time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000
+            box firstWindowFpiBox = newZone(fpiEvent.sourceTime, rightTime, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, "30M FIRST FPI", zoneTransparency)
+            array.push(drawings, firstWindowFpiBox)
+
+    bool belongsToSession = fpiEvent.middleMinute >= sessionStartMinute(currentSession) and fpiEvent.middleMinute < sessionEndMinute(currentSession)
+    if belongsToSession and not sessionFpiFound
+        sessionFpi := market.structureFromFpi(fpiEvent, market.FAMILY_NONE, "SESSION-FPI", "SESSION_FPI")
+        sessionFpiFound := true
+        sessionDirection := fpiEvent.direction
+        phase := PHASE_SESSION
+        if drawFpiBoxes
+            box sessionBox = newZone(fpiEvent.sourceTime, time + (sessionEndMinute(currentSession) - nowMinute) * 60000, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentSession) + " SESSION FPI", math.max(65, zoneTransparency - 12))
+            array.push(drawings, sessionBox)
+
+    if sessionFpiFound and fpiEvent.sourceBar != sessionFpi.sourceBar
+        imb = market.structureFromFpi(fpiEvent, market.FAMILY_IMB_RETEST, fpiEvent.direction == market.DIR_LONG ? "IMB-BULL-01" : "IMB-BEAR-01", fpiEvent.direction == market.DIR_LONG ? "BULL_IMB" : "BEAR_IMB")
+        imb.sourceWindow := currentWindow
+        imb.breakBar := bar_index
+        imb.status := market.STATUS_ARMED
+        imb.used := false
+        imb.touching := false
+        copyStructure(eventImb, imb)
+        targetImb = fpiEvent.direction == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
+        if armImbCandidate(targetImb, imb, fpiEvent.direction) and drawStructureBoxes
+            box imbBox = newZone(fpiEvent.sourceTime, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish IMB" : "Bearish IMB", zoneTransparency)
+            array.push(drawings, imbBox)
+
+    librarySeed = enableLibraryBolo ? market.detectBoloObSeed(fpiEvent.direction, obSearchBars, currentWindow) : market.newStructure()
+    regularSeed = enableRegularBodyOb ? regularBodyObSeed(fpiEvent.direction, obSearchBars, currentWindow) : market.newStructure()
+    combinedSeed = selectMoreExtreme(librarySeed, regularSeed, fpiEvent.direction)
+    bool correctSourceWindow = combinedSeed.active and combinedSeed.sourceWindow == currentWindow and windowFromTimestamp(combinedSeed.sourceTime) == currentWindow
+    bool displacementConfirms = correctSourceWindow and (fpiEvent.direction == market.DIR_LONG ? close > combinedSeed.top : close < combinedSeed.bottom)
+    bool bodyStillValid = correctSourceWindow and not foundationBodyInvalid(combinedSeed, fpiEvent.direction)
+    bool extremePass = correctSourceWindow and foundationAtWindowExtreme(combinedSeed, fpiEvent.direction, windowHigh, windowLow)
+    if displacementConfirms and bodyStillValid and extremePass
+        targetFoundation = fpiEvent.direction == market.DIR_LONG ? bullFoundationCandidate : bearFoundationCandidate
+        bool acceptedFoundation = armFoundation(targetFoundation, combinedSeed, fpiEvent.direction, bar_index)
+        if acceptedFoundation
+            windowState := WINDOW_FOUNDATION_ARMED
+            if drawStructureBoxes
+                box foundationBox = newZone(targetFoundation.sourceTime, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, targetFoundation.top, targetFoundation.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish OB / BOLO ARMED" : "Bearish OB / BOLO ARMED", math.max(72, zoneTransparency - 8))
+                array.push(drawings, foundationBox)
+
+invalidateSourceImbForever(bullImbCandidate, market.DIR_LONG, "BULL_IMB_BODY_CLOSE_BELOW_BOTTOM_PERMANENT")
+invalidateSourceImbForever(bearImbCandidate, market.DIR_SHORT, "BEAR_IMB_BODY_CLOSE_ABOVE_TOP_PERMANENT")
+
+bool bullFoundationConfirmedNow = confirmFoundationAfterRetest(bullFoundationCandidate, market.DIR_LONG)
+bool bearFoundationConfirmedNow = confirmFoundationAfterRetest(bearFoundationCandidate, market.DIR_SHORT)
+if bullFoundationConfirmedNow or bearFoundationConfirmedNow
+    windowState := WINDOW_FOUNDATION_CONFIRMED
+
+// =============================================================================
+// Session FPI disrespect and campaign direction
+// =============================================================================
+if sessionFpiFound and not judasCompleted and bar_index > sessionFpi.sourceBar
+    bool sessionDisrespect = market.bodyCloseInvalidates(sessionDirection, sessionDirection == market.DIR_LONG ? sessionFpi.bottom : sessionFpi.top, close)
+    if sessionDisrespect and phase != PHASE_JUDAS
+        phase := PHASE_JUDAS
+        judasStartWindow := currentWindow
+
+int judasDirection = sessionDirection == market.DIR_NONE ? market.DIR_NONE : -sessionDirection
+
+// =============================================================================
+// Recovery narrative
+// =============================================================================
+bool recoveryWindowEligible = sessionFpiFound and currentWindow >= 0 and (phase != PHASE_JUDAS or not requireLaterWindowForRecovery or currentWindow > judasStartWindow)
+int recoveryDirection = sessionDirection
+alignedRecoveryFoundation = recoveryDirection == market.DIR_LONG ? bullFoundationCandidate : recoveryDirection == market.DIR_SHORT ? bearFoundationCandidate : market.newStructure()
+
+if recoveryWindowEligible and alignedRecoveryFoundation.active and alignedRecoveryFoundation.status == market.STATUS_CONFIRMED
+    bool replaceRecoveryFoundation = not recoveryFoundation.active or recoveryFoundation.status == market.STATUS_INVALID or moreExtreme(alignedRecoveryFoundation.top, alignedRecoveryFoundation.bottom, recoveryFoundation.top, recoveryFoundation.bottom, recoveryDirection)
+    if replaceRecoveryFoundation
+        copyStructure(recoveryFoundation, alignedRecoveryFoundation)
+        recoveryFoundation.direction := recoveryDirection
+        recoveryFoundation.family := market.FAMILY_PRIMARY_OB
+        recoveryFoundation.status := market.STATUS_CONFIRMED
+        recoveryFoundationConfirmBar := alignedRecoveryFoundation.confirmBar
+        recoverySupport := market.newStructure()
+        recoverySupportConfirmBar := na
+        recoveryWindowResolved := false
+        windowState := WINDOW_FOUNDATION_CONFIRMED
+
+if recoveryWindowEligible and recoveryFoundation.active and recoveryFoundation.status == market.STATUS_CONFIRMED
+    if eventImb.active and ((allowAlignedImb and eventImb.direction == recoveryDirection) or (allowOpposingImbReclaim and eventImb.direction == -recoveryDirection))
+        if bindSupport(recoverySupport, eventImb, recoveryFoundation, recoveryDirection, currentWindow)
+            windowState := WINDOW_IMB_ARMED
+    if allowAlignedImb
+        alignedRecoveryImb = recoveryDirection == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
+        if bindSupport(recoverySupport, alignedRecoveryImb, recoveryFoundation, recoveryDirection, currentWindow)
+            windowState := WINDOW_IMB_ARMED
+    if allowOpposingImbReclaim
+        opposingRecoveryImb = recoveryDirection == market.DIR_LONG ? bearImbCandidate : bullImbCandidate
+        if bindSupport(recoverySupport, opposingRecoveryImb, recoveryFoundation, recoveryDirection, currentWindow)
+            windowState := WINDOW_IMB_ARMED
+
+if recoveryFoundation.active and foundationBodyInvalid(recoveryFoundation, recoveryDirection)
+    recoveryFoundation := market.newStructure()
+    recoverySupport := market.newStructure()
+    recoveryFoundationConfirmBar := na
+    recoverySupportConfirmBar := na
+    recoveryWindowResolved := false
+    windowState := WINDOW_INVALID
+
+bool recoveryConfirmedNow = false
+if recoveryWindowEligible and recoveryFoundation.active and recoverySupport.active and not recoveryWindowResolved
+    recoveryConfirmedNow := confirmBoundSupport(recoverySupport, recoveryFoundation, recoveryDirection)
+    if recoveryConfirmedNow
+        recoverySupportConfirmBar := bar_index
+        recoveryWindowResolved := true
+        windowState := WINDOW_ENTRY_CONFIRMED
+
+// =============================================================================
+// Judas narrative
+// =============================================================================
+alignedJudasFoundation = judasDirection == market.DIR_LONG ? bullFoundationCandidate : judasDirection == market.DIR_SHORT ? bearFoundationCandidate : market.newStructure()
+
+if phase == PHASE_JUDAS and enableJudasTrades and currentWindow >= 0 and judasDirection != market.DIR_NONE
+    if alignedJudasFoundation.active and alignedJudasFoundation.status == market.STATUS_CONFIRMED
+        bool replaceJudasFoundation = not judasFoundation.active or judasFoundation.status == market.STATUS_INVALID or moreExtreme(alignedJudasFoundation.top, alignedJudasFoundation.bottom, judasFoundation.top, judasFoundation.bottom, judasDirection)
+        if replaceJudasFoundation
+            copyStructure(judasFoundation, alignedJudasFoundation)
+            judasFoundation.direction := judasDirection
+            judasFoundation.family := market.FAMILY_PRIMARY_OB
+            judasFoundation.status := market.STATUS_CONFIRMED
+            judasFoundationConfirmBar := alignedJudasFoundation.confirmBar
+            judasSupport := market.newStructure()
+            judasSupportConfirmBar := na
+            judasWindowResolved := false
+
+    if judasFoundation.active and judasFoundation.status == market.STATUS_CONFIRMED
+        if eventImb.active and ((allowAlignedImb and eventImb.direction == judasDirection) or (allowOpposingImbReclaim and eventImb.direction == -judasDirection))
+            bindSupport(judasSupport, eventImb, judasFoundation, judasDirection, currentWindow)
+        if allowAlignedImb
+            alignedJudasImb = judasDirection == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
+            bindSupport(judasSupport, alignedJudasImb, judasFoundation, judasDirection, currentWindow)
+        if allowOpposingImbReclaim
+            opposingJudasImb = judasDirection == market.DIR_LONG ? bearImbCandidate : bullImbCandidate
+            bindSupport(judasSupport, opposingJudasImb, judasFoundation, judasDirection, currentWindow)
+
+    if judasFoundation.active and foundationBodyInvalid(judasFoundation, judasDirection)
+        judasFoundation := market.newStructure()
+        judasSupport := market.newStructure()
+        judasFoundationConfirmBar := na
+        judasSupportConfirmBar := na
+        judasWindowResolved := false
+
+bool judasConfirmedNow = false
+if phase == PHASE_JUDAS and enableJudasTrades and judasFoundation.active and judasSupport.active and not judasWindowResolved
+    judasConfirmedNow := confirmBoundSupport(judasSupport, judasFoundation, judasDirection)
+    if judasConfirmedNow
+        judasSupportConfirmBar := bar_index
+        judasWindowResolved := true
+
+// =============================================================================
+// Consume confirmed IMBs
+// =============================================================================
+if recoveryConfirmedNow
+    if sameSource(recoverySupport, bullImbCandidate)
+        consumeStructure(bullImbCandidate, "SOURCE_IMB_CONSUMED_BY_RECOVERY")
+    if sameSource(recoverySupport, bearImbCandidate)
+        consumeStructure(bearImbCandidate, "SOURCE_IMB_CONSUMED_BY_RECOVERY")
+    consumeStructure(recoverySupport, "RECOVERY_IMB_CONSUMED")
+
+if judasConfirmedNow
+    if sameSource(judasSupport, bullImbCandidate)
+        consumeStructure(bullImbCandidate, "SOURCE_IMB_CONSUMED_BY_JUDAS")
+    if sameSource(judasSupport, bearImbCandidate)
+        consumeStructure(bearImbCandidate, "SOURCE_IMB_CONSUMED_BY_JUDAS")
+    consumeStructure(judasSupport, "JUDAS_IMB_CONSUMED")
+
+// =============================================================================
+// Signal selection and orders
+// =============================================================================
+bool recoveryEntry = recoveryConfirmedNow
+bool judasEntry = not recoveryEntry and judasConfirmedNow
+bool selectedValid = recoveryEntry or judasEntry
+int selectedDirection = recoveryEntry ? recoveryDirection : judasEntry ? judasDirection : market.DIR_NONE
+string selectedRule = recoveryEntry ? (phase == PHASE_JUDAS ? (recoveryDirection == market.DIR_LONG ? "JUDAS-END-BUY" : "JUDAS-END-SELL") : (recoveryDirection == market.DIR_LONG ? "WINDOW-DELIVERY-BUY" : "WINDOW-DELIVERY-SELL")) : judasEntry ? (judasDirection == market.DIR_LONG ? "JUDAS-SEQUENCE-BUY" : "JUDAS-SEQUENCE-SELL") : ""
+float selectedInvalidation = recoveryEntry ? recoveryFoundation.invalidation : judasEntry ? judasFoundation.invalidation : na
+
+bool sessionOrderPermission = not tradeDecisionSessionsOnly or inDecisionSession
+bool canSubmit = enableBot and isOneMinute and confirmedBar and sessionOrderPermission and nowMinute < forceFlatAt
+bool freshEntry = not tradeActive and strategy.position_size == 0
+bool oppositeToTrade = tradeActive and selectedValid and selectedDirection == -tradeDirection
+bool canOpenOrReverse = freshEntry or oppositeToTrade
+
+if canSubmit and selectedValid and canOpenOrReverse
+    bool entryIsRecovery = recoveryEntry and selectedDirection == sessionDirection
+    bool entryIsJudas = judasEntry and selectedDirection == judasDirection
+    float entryPrice = close
+    float stopValue = boundedStop(selectedDirection, entryPrice, selectedInvalidation)
+    float targetValue = entryIsJudas and judasUsesNoFixedTarget ? na : entryIsRecovery and deliveryUsesFixedTarget ? (selectedDirection == market.DIR_LONG ? entryPrice + deliveryTargetPoints : entryPrice - deliveryTargetPoints) : na
+    strategy.cancel("SLTP")
+    strategy.entry("ENIGMA", selectedDirection == market.DIR_LONG ? strategy.long : strategy.short, qty = orderQuantity, comment = selectedRule)
+    strategy.exit("SLTP", from_entry = "ENIGMA", stop = stopValue, limit = targetValue, comment_profit = "TP", comment_loss = "SL")
+    orderSubmittedNow := true
+    submittedDirectionNow := selectedDirection
+    tradeActive := true
+    tradeIsJudas := entryIsJudas
+    tradeDirection := selectedDirection
+    tradeEntryBar := bar_index
+    tradeEntryPrice := entryPrice
+    tradeStop := stopValue
+    tradeTarget := targetValue
+    tradeInvalidation := selectedInvalidation
+    activeRule := selectedRule
+    if entryIsRecovery
+        phase := PHASE_DELIVERY
+        judasCompleted := true
+    else if entryIsJudas
+        phase := PHASE_JUDAS
+    if drawSignals
+        label entryLabel = label.new(bar_index, close, selectedDirection == market.DIR_LONG ? "buy\n" + selectedRule : "sell\n" + selectedRule, style = selectedDirection == market.DIR_LONG ? label.style_label_up : label.style_label_down, color = selectedDirection == market.DIR_LONG ? color.green : color.red, textcolor = color.white, size = size.small)
+        array.push(labels, entryLabel)
+
+// =============================================================================
+// Position management
+// =============================================================================
+if tradeActive and bar_index > tradeEntryBar
+    if strategy.position_size != 0 and not na(strategy.position_avg_price)
+        tradeEntryPrice := strategy.position_avg_price
+    strategy.exit("SLTP", from_entry = "ENIGMA", stop = tradeStop, limit = tradeTarget, comment_profit = "TP", comment_loss = "SL")
+    if not tradeIsJudas
+        bool controllerDisrespected = tradeDirection == market.DIR_LONG ? close < tradeInvalidation : close > tradeInvalidation
+        if controllerDisrespected
+            strategy.close("ENIGMA", comment = "FOUNDATION_DISRESPECT")
+    if forceFlat and nowMinute >= forceFlatAt
+        strategy.close("ENIGMA", comment = "FORCE_FLAT")
+
+// =============================================================================
+// Diagnostics
+// =============================================================================
+plot(sessionFpiFound ? sessionDirection : na, "Session FPI Direction", display = display.data_window)
+plot(phase, "Campaign Phase", display = display.data_window)
+plot(activeWindow, "Active 30m Window", display = display.data_window)
+plot(windowState, "Window Narrative State", display = display.data_window)
+plot(bullFoundationCandidate.status, "Bull Foundation Status", display = display.data_window)
+plot(bearFoundationCandidate.status, "Bear Foundation Status", display = display.data_window)
+plot(bullImbCandidate.status, "Bull IMB Status", display = display.data_window)
+plot(bearImbCandidate.status, "Bear IMB Status", display = display.data_window)
+plot(recoveryFoundationConfirmBar, "Recovery Foundation Confirm Bar", display = display.data_window)
+plot(recoverySupportConfirmBar, "Recovery IMB Confirm Bar", display = display.data_window)
+plot(judasFoundationConfirmBar, "Judas Foundation Confirm Bar", display = display.data_window)
+plot(judasSupportConfirmBar, "Judas IMB Confirm Bar", display = display.data_window)
+plot(tradeActive ? tradeDirection : 0, "Active Trade Direction", display = display.data_window)
+plot(tradeActive ? tradeStop : na, "Active Stop", display = display.data_window)
+plot(tradeActive ? tradeTarget : na, "Active Target", display = display.data_window)
+
+alertcondition(orderSubmittedNow and submittedDirectionNow == market.DIR_LONG, "PO3 MMXM Buy", "PO3 MMXM Enigma BUY")
+alertcondition(orderSubmittedNow and submittedDirectionNow == market.DIR_SHORT, "PO3 MMXM Sell", "PO3 MMXM Enigma SELL")
