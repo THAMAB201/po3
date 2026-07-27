@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/tmp/build_v944.py", line 185, in <module>
+    raise RuntimeError('foundation confirmation transition anchor not found')
+RuntimeError: foundation confirmation transition anchor not found
