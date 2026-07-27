@@ -22,12 +22,11 @@ jobs:
           fetch-depth: 0
           show-progress: false
 
-      - name: Extract and run V9.4.4 builder
+      - name: Run robust V9.4.4 builder
         shell: bash
         run: |
           git fetch origin main
-          git show origin/main:.github/workflows/build-enigma-v944-dynamic.yml > /tmp/builder.yml
-          sed -n "/^[[:space:]]*python - <<'PY'$/,/^[[:space:]]*PY$/p" /tmp/builder.yml | sed '1d;$d;s/^          //' > /tmp/build_v944.py
+          git show origin/main:.github/scripts/build_enigma_v944.py > /tmp/build_v944.py
           set +e
           python /tmp/build_v944.py > /tmp/build_v944.log 2>&1
           status=$?
