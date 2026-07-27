@@ -1,0 +1,39 @@
+name: Trigger Enigma V9.4.4 Builder
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Extract and run V9.4.4 builder
+        shell: bash
+        run: |
+          git fetch origin main
+          git show origin/main:.github/workflows/build-enigma-v944-dynamic.yml > /tmp/builder.yml
+          sed -n "/^[[:space:]]*python - <<'PY'$/,/^[[:space:]]*PY$/p" /tmp/builder.yml | sed '1d;$d;s/^          //' > /tmp/build_v944.py
+          python /tmp/build_v944.py
+
+      - name: Commit generated strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_4_4_Dynamic_30m_Narrative.pine
+          git commit -m "Add V9.4.4 dynamic 30-minute narrative"
+          git push origin HEAD:enigma-v9-3-window-narrative
