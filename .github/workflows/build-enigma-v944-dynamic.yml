@@ -1,0 +1,322 @@
+name: Build Enigma V9.4.4 Dynamic Narrative
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-enigma-v944-dynamic.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Create corrected full Pine strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_3_Strict_Foundation_Then_IMB.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_4_Dynamic_30m_Narrative.pine')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.4.3 Strict Foundation Then IMB",\n    shorttitle = "PO3E943F",',
+              '"PO3 MMXM Enigma V9.4.4 Dynamic 30m Narrative",\n    shorttitle = "PO3E944D",',
+              1,
+          )
+
+          text = text.replace(
+              'bool allowOpposingImbReclaim = input.bool(true, "Allow Opposing IMB Reclaim", group = G_STRUCTURE)',
+              'bool allowOpposingFpiDisrespect = input.bool(true, "Allow Opposing 30m FPI Disrespect Toward Session Bias", group = G_STRUCTURE)',
+              1,
+          )
+
+          old_regular = '''regularBodyObSeed(int direction, int searchBars, int requiredWindow) =>
+              result = market.newStructure()
+              float bestMetric = na
+              for i = 1 to searchBars
+                  int candleWindow = windowFromTimestamp(time[i])
+                  bool oppositeCandle = direction == market.DIR_LONG ? close[i] < open[i] : close[i] > open[i]
+                  float bodyTop = math.max(open[i], close[i])
+                  float bodyBottom = math.min(open[i], close[i])
+                  float metric = direction == market.DIR_LONG ? low[i] : high[i]
+                  bool better = na(bestMetric) or direction == market.DIR_LONG and metric < bestMetric or direction == market.DIR_SHORT and metric > bestMetric
+                  if oppositeCandle and candleWindow == requiredWindow and better
+                      bestMetric := metric
+                      market.setStructure(result, direction, market.FAMILY_PRIMARY_OB, bodyTop, bodyBottom, bodyTop, bodyBottom, direction == market.DIR_LONG ? low[i] : high[i], bar_index - i, time[i], requiredWindow, time[i], market.STATUS_ARMED, direction == market.DIR_LONG ? "OB-BULL-01" : "OB-BEAR-01", "REGULAR_BODY_ORDER_BLOCK")
+              result
+          '''
+
+          new_regular = '''regularBodyObSeed(int direction, int searchBars, int requiredWindow) =>
+              result = market.newStructure()
+              bool collecting = true
+              bool found = false
+              float zoneTop = na
+              float zoneBottom = na
+              float invalidation = na
+              float extremeMetric = na
+              int extremeBar = na
+              int extremeTime = na
+
+              // A regular OB is the consecutive opposing body series immediately
+              // preceding the three-candle displacement/FPI. We no longer scan six
+              // unrelated candles and promote an arbitrary one into a foundation.
+              for i = 3 to searchBars + 2
+                  if collecting
+                      int candleWindow = windowFromTimestamp(time[i])
+                      bool oppositeCandle = direction == market.DIR_LONG ? close[i] < open[i] : close[i] > open[i]
+                      if candleWindow != requiredWindow or not oppositeCandle
+                          collecting := false
+                      else
+                          float bodyTop = math.max(open[i], close[i])
+                          float bodyBottom = math.min(open[i], close[i])
+                          float metric = direction == market.DIR_LONG ? low[i] : high[i]
+                          bool moreExtremeNow = na(extremeMetric) or direction == market.DIR_LONG and metric < extremeMetric or direction == market.DIR_SHORT and metric > extremeMetric
+                          found := true
+                          zoneTop := na(zoneTop) ? bodyTop : math.max(zoneTop, bodyTop)
+                          zoneBottom := na(zoneBottom) ? bodyBottom : math.min(zoneBottom, bodyBottom)
+                          invalidation := na(invalidation) ? metric : direction == market.DIR_LONG ? math.min(invalidation, metric) : math.max(invalidation, metric)
+                          if moreExtremeNow
+                              extremeMetric := metric
+                              extremeBar := bar_index - i
+                              extremeTime := time[i]
+
+              if found
+                  market.setStructure(result, direction, market.FAMILY_PRIMARY_OB, zoneTop, zoneBottom, zoneTop, zoneBottom, invalidation, extremeBar, extremeTime, requiredWindow, extremeTime, market.STATUS_ARMED, direction == market.DIR_LONG ? "OB-BULL-01" : "OB-BEAR-01", "CONSECUTIVE_BODY_ORDER_BLOCK")
+              result
+          '''
+
+          if old_regular not in text:
+              raise RuntimeError('regularBodyObSeed anchor not found')
+          text = text.replace(old_regular, new_regular, 1)
+
+          old_bind = '''bindImbCandidate(target, source, foundation, int direction, int requiredWindow) =>
+              // An IMB is bindable only while its original lifecycle is still live.
+              // Once body-close disrespected, it can never be rebound or respected.
+              bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED
+              bool causal = sourceLive and foundation.active and foundation.status == market.STATUS_CONFIRMED and not na(foundation.confirmBar) and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and not na(source.breakBar)
+              bool replace = causal and (not target.active or target.used or target.status == market.STATUS_INVALID or moreExtreme(source.top, source.bottom, target.top, target.bottom, direction))
+              if replace
+                  copyStructure(target, source)
+                  target.direction := direction
+                  target.family := market.FAMILY_POST_OB_IMB
+                  target.parentId := foundation.sourceBar
+                  target.sourceWindow := requiredWindow
+                  target.invalidation := direction == market.DIR_LONG ? target.bottom : target.top
+                  target.status := market.STATUS_ARMED
+                  target.used := false
+                  target.confirmBar := na
+                  target.touching := false
+                  target.ruleId := direction == market.DIR_LONG ? "BOUND-IMB-BUY" : "BOUND-IMB-SELL"
+                  target.reason := source.direction == direction ? "ALIGNED_IMB_BOUND_TO_FOUNDATION" : "OPPOSING_IMB_RECLAIM_BOUND_TO_FOUNDATION"
+              replace
+          '''
+
+          new_bind = '''bindImbCandidate(target, source, foundation, int direction, int requiredWindow) =>
+              // The trade-confirming IMB must be aligned with the intended move and
+              // created by the foundation-confirming displacement or later in the
+              // same 30-minute window. An older/opposing IMB cannot be relabeled.
+              bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED
+              bool sameDirection = source.direction == direction
+              bool formedWithOrAfterFoundation = not na(source.breakBar) and not na(foundation.confirmBar) and source.breakBar >= foundation.confirmBar
+              bool causal = sourceLive and sameDirection and foundation.active and foundation.status == market.STATUS_CONFIRMED and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and formedWithOrAfterFoundation
+              bool replace = causal and (not target.active or target.used or target.status == market.STATUS_INVALID or moreExtreme(source.top, source.bottom, target.top, target.bottom, direction))
+              if replace
+                  copyStructure(target, source)
+                  target.direction := direction
+                  target.family := market.FAMILY_POST_OB_IMB
+                  target.parentId := foundation.sourceBar
+                  target.sourceWindow := requiredWindow
+                  target.invalidation := direction == market.DIR_LONG ? target.bottom : target.top
+                  target.status := market.STATUS_ARMED
+                  target.used := false
+                  target.confirmBar := na
+                  target.touching := false
+                  target.ruleId := direction == market.DIR_LONG ? "BOUND-IMB-BUY" : "BOUND-IMB-SELL"
+                  target.reason := "ALIGNED_IMB_BOUND_TO_CONFIRMED_FOUNDATION"
+              replace
+          '''
+
+          if old_bind not in text:
+              raise RuntimeError('bindImbCandidate anchor not found')
+          text = text.replace(old_bind, new_bind, 1)
+
+          text = text.replace(
+              'var bool judasCompleted = false',
+              'var bool judasCompleted = false\nvar bool judasEntryTaken = false',
+              1,
+          )
+
+          text = text.replace(
+              'var bool windowResolved = false',
+              'var bool windowResolved = false\nvar int windowAuthority = market.DIR_NONE\nvar bool windowFpiDisrespectedTowardSession = false',
+              1,
+          )
+
+          text = text.replace(
+              '    judasCompleted := false\n\nif newWindow or newSession',
+              '    judasCompleted := false\n    judasEntryTaken := false\n\nif newWindow or newSession',
+              1,
+          )
+
+          text = text.replace(
+              '    windowResolved := false\n    bullImbCandidate := market.newStructure()',
+              '    windowResolved := false\n    windowAuthority := market.DIR_NONE\n    windowFpiDisrespectedTowardSession := false\n    bullImbCandidate := market.newStructure()',
+              1,
+          )
+
+          text = text.replace(
+              '        windowFirstFpiBottom := fpiEvent.bottom\n        if drawFpiBoxes',
+              '        windowFirstFpiBottom := fpiEvent.bottom\n        windowAuthority := fpiEvent.direction\n        windowFpiDisrespectedTowardSession := false\n        if drawFpiBoxes',
+              1,
+          )
+
+          old_foundation_transition = '''        if acceptedFoundation and displacementConfirms
+                  targetFoundation.status := market.STATUS_BROKEN
+                  targetFoundation.breakBar := bar_index
+                  targetFoundation.touching := false
+
+          // Every bar advances the two candidate foundations. A valid foundation
+          // therefore requires: candidate -> displacement -> later retest ->
+          // directional close. This is the missing gate that allowed fake buys.
+          bool bullFoundationConfirmedNow = updateFoundationLifecycle(bullFoundationCandidate, market.DIR_LONG)
+          bool bearFoundationConfirmedNow = updateFoundationLifecycle(bearFoundationCandidate, market.DIR_SHORT)
+          '''
+
+          new_foundation_transition = '''        if acceptedFoundation and displacementConfirms
+                  // The displacement confirms the extreme OB/BOLO as long as its
+                  // body remains valid. The later retest requirement belongs to the
+                  // IMB, not to the foundation itself.
+                  targetFoundation.status := market.STATUS_CONFIRMED
+                  targetFoundation.breakBar := bar_index
+                  targetFoundation.confirmBar := bar_index
+                  targetFoundation.touching := false
+
+          bool bullFoundationConfirmedNow = bullFoundationCandidate.active and bullFoundationCandidate.status == market.STATUS_CONFIRMED and bullFoundationCandidate.confirmBar == bar_index
+          bool bearFoundationConfirmedNow = bearFoundationCandidate.active and bearFoundationCandidate.status == market.STATUS_CONFIRMED and bearFoundationCandidate.confirmBar == bar_index
+          '''
+
+          if old_foundation_transition not in text:
+              raise RuntimeError('foundation confirmation transition anchor not found')
+          text = text.replace(old_foundation_transition, new_foundation_transition, 1)
+
+          text = text.replace(
+              'CURRENT_WINDOW_BULLISH_OB_BOLO_BREAK_RETEST_RESPECT',
+              'CURRENT_WINDOW_BULLISH_OB_BOLO_DISPLACEMENT_CONFIRM',
+          )
+          text = text.replace(
+              'CURRENT_WINDOW_BEARISH_OB_BOLO_BREAK_RETEST_RESPECT',
+              'CURRENT_WINDOW_BEARISH_OB_BOLO_DISPLACEMENT_CONFIRM',
+          )
+
+          recovery_header = '''// =============================================================================
+          // Dynamic current-window recovery narrative
+          // =============================================================================
+          bool recoveryWindowEligible = sessionFpiFound and currentWindow >= 0 and (phase != PHASE_JUDAS or not requireLaterWindowForRecovery or currentWindow > judasStartWindow)
+          '''
+
+          recovery_header_new = '''// =============================================================================
+          // Persistent 30-minute FPI authority
+          // The Session FPI remains the global objective. Each local window must
+          // either print an aligned first FPI or disrespect its opposing first FPI.
+          // Authority is latched for the rest of the interval; it is not erased by
+          // a routine pullback back into the local FPI.
+          // =============================================================================
+          if sessionFpiFound and windowFirstFpiFound
+              if windowFirstFpiDirection == sessionDirection
+                  bool alignedWindowFailed = windowAuthority == sessionDirection and market.bodyCloseInvalidates(sessionDirection, sessionDirection == market.DIR_LONG ? windowFirstFpiBottom : windowFirstFpiTop, close)
+                  if alignedWindowFailed
+                      windowAuthority := -sessionDirection
+              else if allowOpposingFpiDisrespect and windowAuthority != sessionDirection
+                  bool oppositeFpiDisrespectedTowardSession = sessionDirection == market.DIR_LONG ? close > windowFirstFpiTop : close < windowFirstFpiBottom
+                  if oppositeFpiDisrespectedTowardSession
+                      windowAuthority := sessionDirection
+                      windowFpiDisrespectedTowardSession := true
+
+          // =============================================================================
+          // Dynamic current-window recovery narrative
+          // =============================================================================
+          bool recoveryWindowEligible = sessionFpiFound and currentWindow >= 0 and windowFirstFpiFound and windowAuthority == sessionDirection and (phase != PHASE_JUDAS or not requireLaterWindowForRecovery or currentWindow > judasStartWindow)
+          '''
+
+          if recovery_header not in text:
+              raise RuntimeError('recovery eligibility anchor not found')
+          text = text.replace(recovery_header, recovery_header_new, 1)
+
+          old_recovery_opposing = '''    if allowOpposingImbReclaim
+                  opposingImb = recoveryDirection == market.DIR_LONG ? bearImbCandidate : bullImbCandidate
+                  if bindImbCandidate(recoverySupport, opposingImb, recoveryFoundation, recoveryDirection, currentWindow)
+                      windowState := WINDOW_IMB_ARMED
+          '''
+          if old_recovery_opposing not in text:
+              raise RuntimeError('recovery opposing IMB block not found')
+          text = text.replace(old_recovery_opposing, '', 1)
+
+          old_judas_condition = 'if phase == PHASE_JUDAS and enableJudasTrades and currentWindow >= 0 and judasDirection != market.DIR_NONE and not judasWindowResolved'
+          new_judas_condition = 'if phase == PHASE_JUDAS and enableJudasTrades and not judasEntryTaken and currentWindow >= 0 and windowFirstFpiFound and windowAuthority == judasDirection and judasDirection != market.DIR_NONE and not judasWindowResolved'
+          if old_judas_condition not in text:
+              raise RuntimeError('Judas condition anchor not found')
+          text = text.replace(old_judas_condition, new_judas_condition, 1)
+
+          old_judas_opposing = '''        if allowOpposingImbReclaim
+                      bindImbCandidate(judasSupport, opposingJudasImb, judasFoundation, judasDirection, currentWindow)
+          '''
+          if old_judas_opposing not in text:
+              raise RuntimeError('Judas opposing IMB block not found')
+          text = text.replace(old_judas_opposing, '', 1)
+
+          text = text.replace(
+              '        phase := PHASE_JUDAS\n\n    if drawSignals',
+              '        phase := PHASE_JUDAS\n        judasEntryTaken := true\n\n    if drawSignals',
+              1,
+          )
+
+          text = text.replace(
+              'plot(windowFirstFpiFound ? windowFirstFpiDirection : na, "Window First FPI Direction", display = display.data_window)',
+              'plot(windowFirstFpiFound ? windowFirstFpiDirection : na, "Window First FPI Direction", display = display.data_window)\nplot(windowAuthority, "Latched Window Authority", display = display.data_window)\nplot(windowFpiDisrespectedTowardSession ? 1 : 0, "Opposing Window FPI Disrespected Toward Session", display = display.data_window)\nplot(judasEntryTaken ? 1 : 0, "Judas Entry Already Used", display = display.data_window)',
+              1,
+          )
+
+          text = text.replace(
+              'CONFIRMED_OB_BOLO_RETEST_THEN_BOUND_IMB_RETEST_RESPECT',
+              'CONFIRMED_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT',
+          )
+          text = text.replace(
+              'CONFIRMED_OB_BOLO_RETEST_THEN_BOUND_IMB_RETEST_JUDAS',
+              'ONE_JUDAS_SEQUENCE_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST',
+          )
+
+          required = [
+              'shorttitle = "PO3E944D"',
+              'CONSECUTIVE_BODY_ORDER_BLOCK',
+              'formedWithOrAfterFoundation',
+              'windowAuthority == sessionDirection',
+              'not judasEntryTaken',
+              'judasEntryTaken := true',
+              'Latched Window Authority',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError(f'missing required marker: {marker}')
+
+          target.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit generated strategy to working branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_4_4_Dynamic_30m_Narrative.pine
+          git commit -m "Add V9.4.4 dynamic 30-minute FPI narrative"
+          git push origin HEAD:enigma-v9-3-window-narrative
