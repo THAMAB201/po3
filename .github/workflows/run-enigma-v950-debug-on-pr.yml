@@ -1,0 +1,56 @@
+name: Debug Enigma V9.5.0 Builder On PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  debug-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: builder
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          path: work
+          fetch-depth: 0
+      - name: Run patch and persist diagnostic
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, traceback
+
+          workflow = Path('builder/.github/workflows/build-enigma-v950-adaptive.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(workflow) if "python - <<'PY'" in line) + 1
+          end = next(i for i in range(start, len(workflow)) if workflow[i].strip() == 'PY')
+          lines = workflow[start:end]
+          indent = min((len(line) - len(line.lstrip()) for line in lines if line.strip()), default=0)
+          script = '\n'.join(line[indent:] for line in lines)
+          try:
+              subprocess.run(['python', '-c', script], cwd='work', check=True, capture_output=True, text=True)
+              diagnostic = 'SUCCESS\n'
+          except subprocess.CalledProcessError as exc:
+              diagnostic = 'FAILURE\nSTDOUT:\n' + (exc.stdout or '') + '\nSTDERR:\n' + (exc.stderr or '')
+          Path('work/enigma/V950_BUILD_DIAGNOSTIC.txt').write_text(diagnostic, encoding='utf-8')
+          PY
+      - name: Commit diagnostic and generated file if available
+        shell: bash
+        working-directory: work
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/V950_BUILD_DIAGNOSTIC.txt
+          if [ -f enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine ]; then
+            git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine
+          fi
+          git commit -m "Run V9.5.0 adaptive builder diagnostic" || exit 0
+          git push origin HEAD:enigma-v9-3-window-narrative
