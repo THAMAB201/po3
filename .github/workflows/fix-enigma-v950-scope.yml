@@ -1,0 +1,97 @@
+name: Fix Enigma V9.5.0 Scope
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/triggers/fix-enigma-v950-scope.txt
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout strategy branch
+        uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Patch Pine scope and shadowing errors
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine')
+          text = path.read_text(encoding='utf-8')
+
+          old_function = '''confirmedBgobSignal(structure, int direction, string ruleId, string reasonText) =>
+              signal = market.newSignal()
+              if structure.active and structure.status == market.STATUS_CONFIRMED and structure.confirmBar == bar_index
+                  signal := market.makeSignal(direction, market.FAMILY_30M_REVERSAL, structure.top, structure.bottom, structure.invalidation, structure.sourceBar, structure.sourceTime, currentWindow, structure.sourceBar, true, false, ruleId, reasonText)
+              signal'''
+
+          new_function = '''confirmedBgobSignal(structure, int direction, int signalWindow, string ruleId, string reasonText) =>
+              signal = market.newSignal()
+              if structure.active and structure.status == market.STATUS_CONFIRMED and structure.confirmBar == bar_index
+                  signal := market.makeSignal(direction, market.FAMILY_30M_REVERSAL, structure.top, structure.bottom, structure.invalidation, structure.sourceBar, structure.sourceTime, signalWindow, structure.sourceBar, true, false, ruleId, reasonText)
+              signal'''
+
+          if old_function not in text:
+              raise RuntimeError('confirmedBgobSignal scope block not found')
+          text = text.replace(old_function, new_function, 1)
+
+          old_same = '''sameImbSource(first, second) =>
+              not na(first.sourceBar) and not na(second.sourceBar) and first.sourceBar == second.sourceBar and first.sourceTime == second.sourceTime'''
+
+          new_same = '''sameImbSource(firstStructure, secondStructure) =>
+              not na(firstStructure.sourceBar) and not na(secondStructure.sourceBar) and firstStructure.sourceBar == secondStructure.sourceBar and firstStructure.sourceTime == secondStructure.sourceTime'''
+
+          if old_same not in text:
+              raise RuntimeError('sameImbSource shadowing block not found')
+          text = text.replace(old_same, new_same, 1)
+
+          calls = {
+              'confirmedBgobSignal(alignedWindowBgob, recoveryDirection, recoveryDirection == market.DIR_LONG ?': 'confirmedBgobSignal(alignedWindowBgob, recoveryDirection, currentWindow, recoveryDirection == market.DIR_LONG ?',
+              'confirmedBgobSignal(macroBgob, recoveryDirection, recoveryDirection == market.DIR_LONG ?': 'confirmedBgobSignal(macroBgob, recoveryDirection, currentWindow, recoveryDirection == market.DIR_LONG ?',
+              'confirmedBgobSignal(alignedJudasBgob, judasDirection, judasDirection == market.DIR_LONG ?': 'confirmedBgobSignal(alignedJudasBgob, judasDirection, currentWindow, judasDirection == market.DIR_LONG ?',
+              'confirmedBgobSignal(macroBgob, judasDirection, judasDirection == market.DIR_LONG ?': 'confirmedBgobSignal(macroBgob, judasDirection, currentWindow, judasDirection == market.DIR_LONG ?',
+          }
+
+          for old, new in calls.items():
+              if old not in text:
+                  raise RuntimeError(f'BGOB call not found: {old}')
+              text = text.replace(old, new, 1)
+
+          if 'structure.sourceTime, currentWindow, structure.sourceBar' in text:
+              raise RuntimeError('Function still captures later-declared currentWindow')
+          if 'sameImbSource(first, second)' in text:
+              raise RuntimeError('Built-in second is still shadowed')
+
+          required = [
+              'confirmedBgobSignal(structure, int direction, int signalWindow',
+              'structure.sourceTime, signalWindow, structure.sourceBar',
+              'sameImbSource(firstStructure, secondStructure)',
+              'confirmedBgobSignal(alignedWindowBgob, recoveryDirection, currentWindow,',
+              'confirmedBgobSignal(macroBgob, judasDirection, currentWindow,',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError(f'Missing compiler-fix marker: {marker}')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit corrected full strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine
+          git diff --cached --quiet && exit 0
+          git commit -m "Fix Pine currentWindow scope and second shadowing in V9.5.0"
+          git push origin HEAD:enigma-v9-3-window-narrative
