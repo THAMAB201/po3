@@ -1,0 +1,120 @@
+name: Run Final2 Enigma V9.5.0 Builder
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: builder
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          path: work
+          fetch-depth: 0
+      - name: Run adaptive patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, re
+
+          workflow = Path('builder/.github/workflows/build-enigma-v950-adaptive.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(workflow) if "python - <<'PY'" in line) + 1
+          end = next(i for i in range(start, len(workflow)) if workflow[i].strip() == 'PY')
+          lines = workflow[start:end]
+          indent = min((len(line) - len(line.lstrip()) for line in lines if line.strip()), default=0)
+          script = '\n'.join(line[indent:] for line in lines)
+
+          script, count = re.subn(
+              r"old_macro_draw = '''.*?text = text\.replace\(old_macro_draw, new_macro_draw, 1\)",
+              "# Macro BGOB insertion deferred to outer runner.",
+              script,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise RuntimeError('could not remove macro builder block')
+          script = script.replace("    'PERSISTENT_FIRST_MACRO_BGOB',\n", "")
+
+          result = subprocess.run(['python', '-c', script], cwd='work', capture_output=True, text=True)
+          diagnostic = ('BASE_PATCH_SUCCESS\n' if result.returncode == 0 else 'BASE_PATCH_FAILURE\n') + 'STDOUT:\n' + result.stdout + '\nSTDERR:\n' + result.stderr
+          if result.returncode != 0:
+              Path('work/enigma/V950_FINAL2_BUILD_DIAGNOSTIC.txt').write_text(diagnostic, encoding='utf-8')
+              raise SystemExit(result.returncode)
+
+          target = Path('work/enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine')
+          text = target.read_text(encoding='utf-8')
+          marker = '    // Persist every current-window imbalance at formation. It remains only a\n'
+          if marker not in text:
+              Path('work/enigma/V950_FINAL2_BUILD_DIAGNOSTIC.txt').write_text(diagnostic + '\nMISSING IMB MARKER\n', encoding='utf-8')
+              raise RuntimeError('IMB marker missing')
+
+          bgob_block = '''    // Every FPI may seed its third-candle BGOB. It is not an entry until
+              // price closes beyond it, later retests it and closes directionally
+              // back outside. First-Macro BGOB state persists across local windows.
+              if enableBgobEntries
+                  bgobSeed = bgobSeedFromFpi(fpiEvent, currentWindow, belongsToFirstMacro ? "FIRST_MACRO_FPI_BGOB" : "CURRENT_WINDOW_FPI_BGOB")
+                  targetBgob = fpiEvent.direction == market.DIR_LONG ? bullBgobCandidate : bearBgobCandidate
+                  bool bgobAccepted = not windowResolved and armMoreExtreme(targetBgob, bgobSeed, fpiEvent.direction)
+                  if bgobAccepted and drawStructureBoxes
+                      box bgobBox = newZone(time, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, bgobSeed.top, bgobSeed.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish BGOB Seed" : "Bearish BGOB Seed", math.max(72, zoneTransparency - 6))
+                      array.push(drawings, bgobBox)
+                  if belongsToFirstMacro and enableMacroBgobEntries and not macroBgob.active
+                      copyStructure(macroBgob, bgobSeed)
+                      macroBgob.sourceWindow := currentWindow
+                      macroBgob.reason := "PERSISTENT_FIRST_MACRO_BGOB"
+
+          '''
+          block_lines = bgob_block.splitlines()
+          block_indent = min((len(line) - len(line.lstrip()) for line in block_lines if line.strip()), default=0)
+          bgob_block = '\n'.join(line[block_indent:] for line in block_lines) + '\n'
+          text = text.replace(marker, bgob_block + marker, 1)
+
+          required = [
+              'shorttitle = "PO3E950A"',
+              'Adaptive One-Narrative-Per-Window Arbiter',
+              'PRIORITY_CONSECUTIVE_BODY_SERIES_OB_BOLO',
+              'PERSISTENT_FIRST_MACRO_BGOB',
+              'NARRATIVE_SESSION_LOCKED',
+              'JUDAS-MACRO-BGOB-SELL',
+              'windowTradeTaken := true',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              Path('work/enigma/V950_FINAL2_BUILD_DIAGNOSTIC.txt').write_text(diagnostic + '\nMISSING MARKERS:\n' + '\n'.join(missing), encoding='utf-8')
+              raise RuntimeError('generated strategy missing required markers')
+
+          target.write_text(text, encoding='utf-8')
+          Path('work/enigma/V950_FINAL2_BUILD_DIAGNOSTIC.txt').write_text(diagnostic + '\nFINAL_PATCH_SUCCESS\n', encoding='utf-8')
+          PY
+      - name: Commit generated strategy
+        if: success()
+        shell: bash
+        working-directory: work
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine enigma/V950_FINAL2_BUILD_DIAGNOSTIC.txt
+          git commit -m "Add V9.5.0 adaptive narrative arbiter" || exit 0
+          git push origin HEAD:enigma-v9-3-window-narrative
+      - name: Commit failure diagnostic
+        if: failure()
+        shell: bash
+        working-directory: work
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/V950_FINAL2_BUILD_DIAGNOSTIC.txt
+          git commit -m "Record V9.5.0 final2 builder failure" || exit 0
+          git push origin HEAD:enigma-v9-3-window-narrative
