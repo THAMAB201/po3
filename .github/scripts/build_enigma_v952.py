@@ -1,0 +1,204 @@
+from pathlib import Path
+
+source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_1_Session_Recovery_Decoupled.pine')
+target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Dynamic_Session_Macro_Roles.pine')
+text = source.read_text(encoding='utf-8')
+
+
+def replace_once(old: str, new: str, label: str) -> None:
+    global text
+    if old not in text:
+        raise RuntimeError(f'{label} not found')
+    text = text.replace(old, new, 1)
+
+
+def replace_section(start: str, end: str, new_section: str, label: str) -> None:
+    global text
+    start_index = text.find(start)
+    if start_index < 0:
+        raise RuntimeError(f'{label} start not found')
+    end_index = text.find(end, start_index)
+    if end_index < 0:
+        raise RuntimeError(f'{label} end not found')
+    text = text[:start_index] + new_section + text[end_index:]
+
+
+replace_once(
+    '"PO3 MMXM Enigma V9.5.1 Session Recovery Decoupled",\n    shorttitle = "PO3E951R",',
+    '"PO3 MMXM Enigma V9.5.2 Dynamic Session Macro Roles",\n    shorttitle = "PO3E952D",',
+    'strategy title',
+)
+
+session_input = 'bool enableSessionMacroBreakJudas = input.bool(true, "Session + First Macro Break Enables Judas Sequence", group = G_SESSION, tooltip = "Minimal tactical patch. A body close beyond both the Session FPI and first Macro FPI in the direction opposite Session bias latches counter-bias authority. Entry still requires the existing current-window OB/BOLO -> aligned IMB -> later retest sequence.")'
+replace_once(
+    session_input,
+    'bool enableSessionMacroBreakJudas = input.bool(true, "Session + First Macro Break Enables Judas Sequence", group = G_SESSION, tooltip = "A completed body close through Session FPI plus First Macro support toward the opposite direction permits a Judas sequence. It never creates a standalone trade; OB/BOLO -> aligned IMB -> later retest/close remains mandatory.")\nbool requireMacroContextForEntries = input.bool(true, "Require First Macro Context After It Forms", group = G_SESSION, tooltip = "Before the First Macro FPI exists, local 30-minute authority may operate. After it forms, new Session-direction or Judas entries must be supported by the Macro FPI: aligned FPI support or opposite FPI body-close failure toward the intended direction.")',
+    'macro context input',
+)
+
+replace_once(
+    'int PHASE_DELIVERY = 3\n',
+    'int PHASE_DELIVERY = 3\n\nint FPI_RELATION_NONE = 0\nint FPI_RELATION_SUPPORTIVE = 1\nint FPI_RELATION_TESTING = 2\nint FPI_RELATION_FAILED = 3\n',
+    'FPI state constants',
+)
+
+helper_anchor = 'sideColor(int direction) => direction == market.DIR_LONG ? color.green : direction == market.DIR_SHORT ? color.red : color.gray\n'
+helper_addition = '''sideColor(int direction) => direction == market.DIR_LONG ? color.green : direction == market.DIR_SHORT ? color.red : color.gray
+
+fpiRelationState(structure) =>
+    int relation = FPI_RELATION_NONE
+    if structure.active
+        relation := structure.direction == market.DIR_LONG ? (close > structure.top ? FPI_RELATION_SUPPORTIVE : close < structure.bottom ? FPI_RELATION_FAILED : FPI_RELATION_TESTING) : (close < structure.bottom ? FPI_RELATION_SUPPORTIVE : close > structure.top ? FPI_RELATION_FAILED : FPI_RELATION_TESTING)
+    relation
+
+fpiSupportsDirection(structure, int desiredDirection) =>
+    int relation = fpiRelationState(structure)
+    desiredDirection == structure.direction ? relation == FPI_RELATION_SUPPORTIVE : desiredDirection == -structure.direction and relation == FPI_RELATION_FAILED
+'''
+replace_once(helper_anchor, helper_addition, 'FPI helper functions')
+
+replace_once(
+    'var int sessionMacroBreakBar = na\n',
+    'var int sessionMacroBreakBar = na\nvar bool sessionFpiDisrespected = false\nvar int sessionFpiDisrespectBar = na\nvar int sessionRecoveryBar = na\nvar int macroFpiRelation = FPI_RELATION_NONE\n',
+    'persistent dynamic state',
+)
+
+replace_once(
+    '    sessionMacroBreakBar := na\n    macroBgob := market.newStructure()',
+    '    sessionMacroBreakBar := na\n    sessionFpiDisrespected := false\n    sessionFpiDisrespectBar := na\n    sessionRecoveryBar := na\n    macroFpiRelation := FPI_RELATION_NONE\n    macroBgob := market.newStructure()',
+    'session reset state',
+)
+
+replace_section(
+    '// =============================================================================\n// Session FPI disrespect is latched. A wick is not enough.',
+    '// =============================================================================\n// FPI, IMB and OB/BOLO discovery',
+    '''// =============================================================================
+// Session FPI lifecycle. A wick never changes state. Disrespect remains
+// latched until a completed Session-direction structure confirms recovery.
+// =============================================================================
+if sessionFpiFound and bar_index > sessionFpi.sourceBar
+    bool sessionDisrespectNow = market.bodyCloseInvalidates(sessionDirection, sessionDirection == market.DIR_LONG ? sessionFpi.bottom : sessionFpi.top, close)
+    if sessionDisrespectNow and not sessionFpiDisrespected
+        sessionFpiDisrespected := true
+        sessionFpiDisrespectBar := bar_index
+        phase := PHASE_JUDAS
+        if judasStartWindow < 0
+            judasStartWindow := currentWindow
+
+int judasDirection = sessionDirection == market.DIR_NONE ? market.DIR_NONE : -sessionDirection
+
+''',
+    'Session FPI lifecycle',
+)
+
+replace_section(
+    '// =============================================================================\n// Minimal Session + first-Macro break latch',
+    '// =============================================================================\n// Persistent local-window FPI authority',
+    '''// =============================================================================
+// Dynamic First Macro FPI relationship.
+// SUPPORTIVE = price beyond the zone in the FPI direction.
+// TESTING    = price inside the FPI.
+// FAILED     = body close beyond the opposite edge.
+// =============================================================================
+macroFpiRelation := macroFpiFound ? fpiRelationState(macroFpi) : FPI_RELATION_NONE
+bool macroSupportsSessionNow = not macroFpiFound or fpiSupportsDirection(macroFpi, sessionDirection)
+bool macroSupportsJudasNow = macroFpiFound and judasDirection != market.DIR_NONE and fpiSupportsDirection(macroFpi, judasDirection)
+
+''',
+    'dynamic Macro FPI relationship',
+)
+
+dynamic_recovery_marker = '// =============================================================================\n// Dynamic current-window recovery narrative'
+dynamic_authority = '''// Counter-bias authority is reevaluated continuously. It requires an
+// already-disrespected Session FPI plus either First Macro support toward
+// Judas direction or, before Macro exists, active 30m FPI authority.
+bool localSupportsJudasNow = windowFirstFpiFound and windowAuthority == judasDirection
+bool dynamicJudasAuthorityNow = enableSessionMacroBreakJudas and sessionFpiDisrespected and judasDirection != market.DIR_NONE and (macroFpiFound ? macroSupportsJudasNow : localSupportsJudasNow)
+if dynamicJudasAuthorityNow
+    if not sessionMacroBreakLatched
+        sessionMacroBreakBar := bar_index
+    sessionMacroBreakLatched := true
+    sessionMacroBreakDirection := judasDirection
+    phase := PHASE_JUDAS
+    if judasStartWindow < 0
+        judasStartWindow := currentWindow
+else if not tradeIsJudas
+    sessionMacroBreakLatched := false
+    sessionMacroBreakDirection := market.DIR_NONE
+    sessionMacroBreakBar := na
+
+'''
+replace_once(dynamic_recovery_marker, dynamic_authority + dynamic_recovery_marker, 'dynamic Judas authority insertion')
+
+replace_once(
+    'bool recoveryLaterWindowPass = phase != PHASE_JUDAS or not requireLaterWindowForRecovery or currentWindow > judasStartWindow\nbool recoveryLocalFpiPass = windowFirstFpiFound and windowAuthority == sessionDirection\nbool recoveryStructureEligible = sessionFpiFound and currentWindow >= 0 and recoveryLaterWindowPass\nbool recoveryWindowEligible = recoveryStructureEligible and (allowSessionRecoveryWithoutLocalFpi or recoveryLocalFpiPass)',
+    'bool recoveryLaterWindowPass = not sessionFpiDisrespected or not requireLaterWindowForRecovery or currentWindow > judasStartWindow\nbool recoveryLocalFpiPass = windowFirstFpiFound and windowAuthority == sessionDirection\nbool recoveryMacroPass = not requireMacroContextForEntries or not macroFpiFound or macroSupportsSessionNow\nbool recoveryStructureEligible = sessionFpiFound and currentWindow >= 0 and recoveryLaterWindowPass\nbool recoveryWindowEligible = recoveryStructureEligible and recoveryMacroPass and (allowSessionRecoveryWithoutLocalFpi or recoveryLocalFpiPass)',
+    'recovery authority gate',
+)
+
+replace_once(
+    'string recoveryRule = phase == PHASE_JUDAS ? (recoveryDirection == market.DIR_LONG ? "JUDAS-END-BUY" : "JUDAS-END-SELL") : (recoveryDirection == market.DIR_LONG ? "WINDOW-DELIVERY-BUY" : "WINDOW-DELIVERY-SELL")',
+    'bool recoveryAfterDisrespect = sessionFpiDisrespected\n            string recoveryRule = recoveryAfterDisrespect ? (recoveryDirection == market.DIR_LONG ? "SESSION-RECOVERY-BUY" : "SESSION-RECOVERY-SELL") : (recoveryDirection == market.DIR_LONG ? "SESSION-DELIVERY-BUY" : "SESSION-DELIVERY-SELL")',
+    'recovery label classification',
+)
+replace_once(
+    'recoveryFoundation.sourceBar, true, phase == PHASE_JUDAS, recoveryRule, "CONFIRMED_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT")',
+    'recoveryFoundation.sourceBar, true, false, recoveryRule, "SESSION_DIRECTION_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT")',
+    'recovery signal role flag',
+)
+
+text = text.replace('"WINDOW-BGOB-BUY" : "WINDOW-BGOB-SELL"', '"SESSION-BGOB-BUY" : "SESSION-BGOB-SELL"')
+text = text.replace('"MACRO-BGOB-BUY" : "MACRO-BGOB-SELL"', '"SESSION-MACRO-BGOB-BUY" : "SESSION-MACRO-BGOB-SELL"')
+
+replace_once(
+    'bool judasAuthorityPass = (localJudasAuthority or dualFpiJudasAuthority) and not (suspendJudasOnConfirmedSessionFoundation and sessionRecoveryBuildingNow)',
+    'bool judasMacroPass = not requireMacroContextForEntries or not macroFpiFound or macroSupportsJudasNow\nbool judasAuthorityPass = sessionFpiDisrespected and judasMacroPass and (localJudasAuthority or dualFpiJudasAuthority) and not (suspendJudasOnConfirmedSessionFoundation and sessionRecoveryBuildingNow)',
+    'Judas authority gate',
+)
+
+replace_once(
+    'if canSubmit and selectedSignal.valid and canOpenOrReverse\n    bool entryIsRecovery = sessionCandidateSignal.valid and selectedSignal.direction == sessionDirection\n    bool entryIsJudas = phase == PHASE_JUDAS and judasCandidateSignal.valid and selectedSignal.direction == judasDirection and not entryIsRecovery',
+    'bool selectedRoleValid = selectedSignal.valid and sessionFpiFound and (selectedSignal.direction == sessionDirection or selectedSignal.direction == judasDirection)\n\nif canSubmit and selectedRoleValid and canOpenOrReverse\n    // Trade role is immutable: Session direction is delivery/recovery; the exact\n    // opposite direction is Judas. Campaign phase cannot rename the trade.\n    bool entryIsRecovery = selectedSignal.direction == sessionDirection\n    bool entryIsJudas = selectedSignal.direction == judasDirection',
+    'immutable order role classification',
+)
+
+replace_once(
+    '        judasCompleted := true\n        sessionMacroBreakLatched := false',
+    '        judasCompleted := true\n        sessionFpiDisrespected := false\n        sessionRecoveryBar := bar_index\n        judasStartWindow := -1\n        sessionMacroBreakLatched := false',
+    'session recovery transition',
+)
+
+replace_once(
+    'plot(sessionMacroBreakLatched ? sessionMacroBreakDirection : 0, "Session + Macro Break Judas Authority", display = display.data_window)',
+    '''plot(sessionFpiDisrespected ? 1 : 0, "Session FPI Disrespected", display = display.data_window)
+plot(sessionFpiDisrespectBar, "Session FPI Disrespect Bar", display = display.data_window)
+plot(sessionRecoveryBar, "Session Recovery Confirmation Bar", display = display.data_window)
+plot(macroFpiRelation, "First Macro FPI Relation", display = display.data_window)
+plot(macroSupportsSessionNow ? 1 : 0, "Macro Supports Session Direction", display = display.data_window)
+plot(macroSupportsJudasNow ? 1 : 0, "Macro Supports Judas Direction", display = display.data_window)
+plot(sessionMacroBreakLatched ? sessionMacroBreakDirection : 0, "Dynamic Judas Authority", display = display.data_window)''',
+    'dynamic diagnostics',
+)
+text = text.replace('plot(sessionMacroBreakBar, "Session + Macro Break Bar", display = display.data_window)', 'plot(sessionMacroBreakBar, "Dynamic Judas Authority Bar", display = display.data_window)', 1)
+
+required = [
+    'shorttitle = "PO3E952D"',
+    'Require First Macro Context After It Forms',
+    'fpiRelationState',
+    'sessionFpiDisrespected',
+    'macroSupportsSessionNow',
+    'dynamicJudasAuthorityNow',
+    'SESSION-RECOVERY-SELL',
+    'bool entryIsRecovery = selectedSignal.direction == sessionDirection',
+    'bool entryIsJudas = selectedSignal.direction == judasDirection',
+    'Dynamic Judas Authority',
+]
+for marker in required:
+    if marker not in text:
+        raise RuntimeError(f'missing V9.5.2 marker: {marker}')
+
+for marker in ['JUDAS-END-BUY', 'JUDAS-END-SELL', 'bool entryIsJudas = phase == PHASE_JUDAS']:
+    if marker in text:
+        raise RuntimeError(f'stale misclassification remains: {marker}')
+
+target.write_text(text, encoding='utf-8')
