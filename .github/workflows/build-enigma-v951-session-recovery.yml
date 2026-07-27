@@ -1,0 +1,180 @@
+name: Build Enigma V9.5.1 Session Recovery
+
+on:
+  push:
+    branches:
+      - enigma-v9-3-window-narrative
+    paths:
+      - .github/workflows/build-enigma-v951-session-recovery.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Create corrected full Pine strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_1_Session_Recovery_Decoupled.pine')
+          workflow = Path('.github/workflows/build-enigma-v951-session-recovery.yml')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.5.0 Adaptive Narrative Arbiter",\n    shorttitle = "PO3E950A",',
+              '"PO3 MMXM Enigma V9.5.1 Session Recovery Decoupled",\n    shorttitle = "PO3E951R",',
+              1,
+          )
+
+          old_inputs = '''bool enableAdaptiveNarrativeArbiter = input.bool(true, "Adaptive One-Narrative-Per-Window Arbiter", group = G_PROTOCOL, tooltip = "Each 30-minute window may build both sides, but once a complete foundation-plus-support narrative is established, the opposite side is blocked until that narrative invalidates or the next interval begins.")
+          bool cancelStaleJudasOnSessionReclaim = input.bool(true, "Cancel Stale Judas Authority After Session + Macro Reclaim", group = G_PROTOCOL)
+          bool oneTradePerWindow = input.bool(true, "Maximum One New Entry Per 30m Window", group = G_PROTOCOL)'''
+
+          new_inputs = '''bool enableAdaptiveNarrativeArbiter = input.bool(true, "Adaptive One-Narrative-Per-Window Arbiter", group = G_PROTOCOL, tooltip = "Each 30-minute window may build both sides, but once a complete foundation-plus-support narrative is established, the opposite side is blocked until that narrative invalidates or the next interval begins.")
+          bool allowSessionRecoveryWithoutLocalFpi = input.bool(true, "Session Recovery Does Not Require Local 30m FPI", group = G_PROTOCOL, tooltip = "The Session FPI remains the global objective. A valid current-window extreme OB/BOLO -> aligned IMB -> later retest/close sequence may recover toward Session bias even when the active window has no first FPI or its first FPI is still opposing. Turn off to reproduce the stricter V9.5.0 gate.")
+          bool suspendJudasOnConfirmedSessionFoundation = input.bool(true, "Suspend Judas When Session Foundation Confirms", group = G_PROTOCOL, tooltip = "Once a confirmed current-window foundation begins rebuilding in Session-FPI direction, stale counter-bias authority is cancelled before it can steal the interval. A fresh Judas break is required only after that recovery foundation fails.")
+          bool cancelStaleJudasOnSessionReclaim = input.bool(true, "Cancel Stale Judas Authority After Session + Macro Reclaim", group = G_PROTOCOL)
+          bool oneTradePerWindow = input.bool(true, "Maximum One New Entry Per 30m Window", group = G_PROTOCOL)'''
+
+          if old_inputs not in text:
+              raise RuntimeError('protocol input anchor not found')
+          text = text.replace(old_inputs, new_inputs, 1)
+
+          old_eligibility = '''bool recoveryWindowEligible = sessionFpiFound and currentWindow >= 0 and windowFirstFpiFound and windowAuthority == sessionDirection and (phase != PHASE_JUDAS or not requireLaterWindowForRecovery or currentWindow > judasStartWindow)
+          recoveryDirection = sessionDirection
+          alignedFoundation = recoveryDirection == market.DIR_LONG ? bullFoundationCandidate : recoveryDirection == market.DIR_SHORT ? bearFoundationCandidate : market.newStructure()
+
+          if recoveryWindowEligible and alignedFoundation.active and alignedFoundation.status == market.STATUS_CONFIRMED'''
+
+          new_eligibility = '''bool recoveryLaterWindowPass = phase != PHASE_JUDAS or not requireLaterWindowForRecovery or currentWindow > judasStartWindow
+          bool recoveryLocalFpiPass = windowFirstFpiFound and windowAuthority == sessionDirection
+          bool recoveryStructureEligible = sessionFpiFound and currentWindow >= 0 and recoveryLaterWindowPass
+          bool recoveryWindowEligible = recoveryStructureEligible and (allowSessionRecoveryWithoutLocalFpi or recoveryLocalFpiPass)
+          recoveryDirection = sessionDirection
+          alignedFoundation = recoveryDirection == market.DIR_LONG ? bullFoundationCandidate : recoveryDirection == market.DIR_SHORT ? bearFoundationCandidate : market.newStructure()
+
+          // Structural evidence is built independently of local FPI authorization.
+          // This prevents the old deadlock where a valid Session-direction BOLO/OB
+          // and IMB could never be recorded because the current window had no FPI.
+          if recoveryStructureEligible and alignedFoundation.active and alignedFoundation.status == market.STATUS_CONFIRMED'''
+
+          if old_eligibility not in text:
+              raise RuntimeError('recovery eligibility anchor not found')
+          text = text.replace(old_eligibility, new_eligibility, 1)
+
+          old_bind = '''if recoveryWindowEligible and recoveryFoundation.active
+              if allowAlignedImb'''
+          new_bind = '''if recoveryStructureEligible and recoveryFoundation.active
+              if allowAlignedImb'''
+          if old_bind not in text:
+              raise RuntimeError('recovery bind anchor not found')
+          text = text.replace(old_bind, new_bind, 1)
+
+          judas_anchor = '''// =============================================================================
+          // Sequenced Judas narrative: current-window OB/BOLO -> bound IMB ->
+          // later retest and directional close. No standalone sell/buy signals.
+          // =============================================================================
+          judasSequenceSignal = market.newSignal()
+          bool localJudasAuthority = windowFirstFpiFound and windowAuthority == judasDirection
+          bool dualFpiJudasAuthority = sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection and not na(sessionMacroBreakBar) and bar_index >= sessionMacroBreakBar
+          bool judasAuthorityPass = localJudasAuthority or dualFpiJudasAuthority'''
+
+          judas_replacement = '''// A confirmed Session-direction foundation is structural evidence that delivery
+          // is rebuilding. Cancel stale tactical authority before the Judas engine
+          // evaluates this bar; otherwise the old latch can steal the same interval.
+          bool sessionRecoveryBuildingNow = recoveryStructureEligible and recoveryFoundation.active and recoveryFoundation.status == market.STATUS_CONFIRMED
+          if suspendJudasOnConfirmedSessionFoundation and sessionRecoveryBuildingNow and sessionMacroBreakLatched
+              sessionMacroBreakLatched := false
+              sessionMacroBreakDirection := market.DIR_NONE
+              sessionMacroBreakBar := na
+              if not tradeIsJudas
+                  phase := PHASE_SESSION
+
+          // =============================================================================
+          // Sequenced Judas narrative: current-window OB/BOLO -> bound IMB ->
+          // later retest and directional close. No standalone sell/buy signals.
+          // =============================================================================
+          judasSequenceSignal = market.newSignal()
+          bool localJudasAuthority = windowFirstFpiFound and windowAuthority == judasDirection
+          bool dualFpiJudasAuthority = sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection and not na(sessionMacroBreakBar) and bar_index >= sessionMacroBreakBar
+          bool judasAuthorityPass = (localJudasAuthority or dualFpiJudasAuthority) and not (suspendJudasOnConfirmedSessionFoundation and sessionRecoveryBuildingNow)'''
+
+          if judas_anchor not in text:
+              raise RuntimeError('Judas authority anchor not found')
+          text = text.replace(judas_anchor, judas_replacement, 1)
+
+          old_narrative_building = '''bool sessionNarrativeBuilding = recoveryFoundation.active and recoverySupport.active or recoveryBgobSignal.valid'''
+          new_narrative_building = '''bool sessionNarrativeBuilding = sessionRecoveryBuildingNow or recoverySupport.active or recoveryBgobSignal.valid'''
+          if old_narrative_building not in text:
+              raise RuntimeError('session narrative cancellation anchor not found')
+          text = text.replace(old_narrative_building, new_narrative_building, 1)
+
+          old_session_ready = '''bool sessionBuildReady = recoverySupport.active or sessionBgobBuilding or macroBgobBuildingSession'''
+          new_session_ready = '''bool sessionBuildReady = sessionRecoveryBuildingNow or recoverySupport.active or sessionBgobBuilding or macroBgobBuildingSession'''
+          if old_session_ready not in text:
+              raise RuntimeError('session build readiness anchor not found')
+          text = text.replace(old_session_ready, new_session_ready, 1)
+
+          old_authority_tie = '''bool authorityFavorsJudas = windowAuthority == judasDirection or sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection'''
+          new_authority_tie = '''bool authorityFavorsJudas = not sessionRecoveryBuildingNow and (windowAuthority == judasDirection or sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection)'''
+          count = text.count(old_authority_tie)
+          if count != 1:
+              raise RuntimeError(f'expected one arbiter authority tie, found {count}')
+          text = text.replace(old_authority_tie, new_authority_tie, 1)
+
+          old_final_tie = '''bool finalAuthorityFavorsJudas = windowAuthority == judasDirection or sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection'''
+          new_final_tie = '''bool finalAuthorityFavorsJudas = not sessionRecoveryBuildingNow and (windowAuthority == judasDirection or sessionMacroBreakLatched and sessionMacroBreakDirection == judasDirection)'''
+          if old_final_tie not in text:
+              raise RuntimeError('final signal tie anchor not found')
+          text = text.replace(old_final_tie, new_final_tie, 1)
+
+          diagnostic_anchor = '''plot(windowState, "Window Recovery State", display = display.data_window)
+          plot(windowNarrative, "Adaptive Window Narrative", display = display.data_window)'''
+          diagnostic_replacement = '''plot(windowState, "Window Recovery State", display = display.data_window)
+          plot(recoveryStructureEligible ? 1 : 0, "Recovery Structure Eligible", display = display.data_window)
+          plot(recoveryLocalFpiPass ? 1 : 0, "Recovery Local FPI Pass", display = display.data_window)
+          plot(sessionRecoveryBuildingNow ? 1 : 0, "Session Recovery Foundation Building", display = display.data_window)
+          plot(windowNarrative, "Adaptive Window Narrative", display = display.data_window)'''
+          if diagnostic_anchor not in text:
+              raise RuntimeError('diagnostic anchor not found')
+          text = text.replace(diagnostic_anchor, diagnostic_replacement, 1)
+
+          required = [
+              'shorttitle = "PO3E951R"',
+              'allowSessionRecoveryWithoutLocalFpi',
+              'suspendJudasOnConfirmedSessionFoundation',
+              'bool recoveryStructureEligible',
+              'if recoveryStructureEligible and alignedFoundation.active',
+              'bool sessionRecoveryBuildingNow',
+              'not (suspendJudasOnConfirmedSessionFoundation and sessionRecoveryBuildingNow)',
+              'Recovery Local FPI Pass',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError(f'missing patch marker: {marker}')
+
+          if 'bool recoveryWindowEligible = sessionFpiFound and currentWindow >= 0 and windowFirstFpiFound' in text:
+              raise RuntimeError('old authorization deadlock still present')
+
+          target.write_text(text, encoding='utf-8')
+          workflow.unlink()
+          PY
+
+      - name: Commit generated full strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add V9.5.1 decoupled Session recovery evidence and authority"
+          git push origin HEAD:enigma-v9-3-window-narrative
