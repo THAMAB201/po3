@@ -33,4 +33,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Dynamic_Session_Macro_Roles.pine
           git commit -m "Add V9.5.2 dynamic Session and Macro FPI roles"
+          git pull --rebase origin enigma-v9-3-window-narrative
           git push origin HEAD:enigma-v9-3-window-narrative
