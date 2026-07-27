@@ -22,14 +22,19 @@ jobs:
           fetch-depth: 0
           show-progress: false
 
-      - name: Run robust V9.4.4 builder
+      - name: Build and postpatch V9.4.4
         shell: bash
         run: |
           git fetch origin main
           git show origin/main:.github/scripts/build_enigma_v944.py > /tmp/build_v944.py
+          git show origin/main:.github/scripts/postpatch_enigma_v944.py > /tmp/postpatch_v944.py
           set +e
           python /tmp/build_v944.py > /tmp/build_v944.log 2>&1
           status=$?
+          if [ "$status" -eq 0 ]; then
+            python /tmp/postpatch_v944.py >> /tmp/build_v944.log 2>&1
+            status=$?
+          fi
           set -e
           if [ "$status" -ne 0 ]; then
             cp /tmp/build_v944.log enigma/V944_BUILD_ERROR.txt
