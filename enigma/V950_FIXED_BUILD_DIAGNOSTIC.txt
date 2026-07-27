@@ -1,0 +1,7 @@
+FAILURE
+STDOUT:
+
+STDERR:
+Traceback (most recent call last):
+  File "<string>", line 239, in <module>
+RuntimeError: macro BGOB insertion anchor not found
