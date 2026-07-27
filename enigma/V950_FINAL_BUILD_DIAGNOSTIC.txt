@@ -1,0 +1,7 @@
+BASE_PATCH_FAILURE
+STDOUT:
+
+STDERR:
+Traceback (most recent call last):
+  File "<string>", line 432, in <module>
+RuntimeError: missing patch marker: PERSISTENT_FIRST_MACRO_BGOB
