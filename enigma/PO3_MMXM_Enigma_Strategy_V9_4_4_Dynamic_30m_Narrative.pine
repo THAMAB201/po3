@@ -512,8 +512,10 @@ if eligibleFpi
         combinedSeed.ruleId := fpiEvent.direction == market.DIR_LONG ? "OB-BOLO-BULL-01" : "OB-BOLO-BEAR-01"
         combinedSeed.reason := "CURRENT_WINDOW_EXTREME_OB_BOLO_CANDIDATE"
         targetFoundation = fpiEvent.direction == market.DIR_LONG ? bullFoundationCandidate : bearFoundationCandidate
-        bool foundationFrozen = targetFoundation.active and targetFoundation.status == market.STATUS_CONFIRMED
-        bool acceptedFoundation = not foundationFrozen and armMoreExtreme(targetFoundation, combinedSeed, fpiEvent.direction)
+        // Keep searching the active interval for the true extreme. A confirmed
+        // but less-extreme foundation may be replaced before the window resolves.
+        // Once an entry completes, the window is sealed.
+        bool acceptedFoundation = not windowResolved and armMoreExtreme(targetFoundation, combinedSeed, fpiEvent.direction)
         if acceptedFoundation and displacementConfirms
             // Displacement confirms the extreme regular OB or BOLO while its
             // body remains valid. The later retest belongs to the bound IMB.
@@ -575,8 +577,8 @@ if recoveryWindowEligible and alignedFoundation.active and alignedFoundation.sta
         recoverySupportConfirmBar := na
         windowState := WINDOW_FOUNDATION_CONFIRMED
 
-// Bind both possibilities. The same displacement that validated the foundation
-// can create the IMB; the entry still waits for a later retest/close.
+// Bind only a same-direction IMB created by the confirming displacement or later.
+// Entry still waits for its later retest and directional close.
 if recoveryWindowEligible and recoveryFoundation.active
     if allowAlignedImb
         alignedImb = recoveryDirection == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
@@ -632,7 +634,6 @@ if phase == PHASE_JUDAS and enableJudasTrades and not judasEntryTaken and curren
 
     if judasFoundation.active
         alignedJudasImb = judasDirection == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
-        opposingJudasImb = judasDirection == market.DIR_LONG ? bearImbCandidate : bullImbCandidate
         if allowAlignedImb
             bindImbCandidate(judasSupport, alignedJudasImb, judasFoundation, judasDirection, currentWindow)
 
