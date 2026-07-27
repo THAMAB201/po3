@@ -1,0 +1,293 @@
+name: Build Enigma V9.5.2 Directional Role Matrix
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-enigma-v952-role-matrix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout strategy branch
+        uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Patch V9.5.1 without changing structure detection
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_1_Session_Recovery_Decoupled.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Directional_Role_Matrix.pine')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.5.1 Session Recovery Decoupled",\n    shorttitle = "PO3E951R",',
+              '"PO3 MMXM Enigma V9.5.2 Directional Role Matrix",\n    shorttitle = "PO3E952D",',
+              1,
+          )
+
+          old_constants = '''int NARRATIVE_SEARCH = 0
+          int NARRATIVE_SESSION_BUILD = 1
+          int NARRATIVE_JUDAS_BUILD = 2
+          int NARRATIVE_SESSION_LOCKED = 3
+          int NARRATIVE_JUDAS_LOCKED = 4
+          int NARRATIVE_RESOLVED = 5'''
+          new_constants = '''int NARRATIVE_SEARCH = 0
+          int NARRATIVE_SESSION_BUILD = 1
+          int NARRATIVE_JUDAS_BUILD = 2
+          int NARRATIVE_SESSION_LOCKED = 3
+          int NARRATIVE_JUDAS_LOCKED = 4
+          int NARRATIVE_RESOLVED = 5
+
+          // Trade role is determined only by direction relative to the active
+          // Session FPI. Campaign phase never names or reclassifies a trade.
+          int TRADE_ROLE_NONE = 0
+          int TRADE_ROLE_SESSION = 1
+          int TRADE_ROLE_JUDAS = 2'''
+          if old_constants not in text:
+              raise RuntimeError('Narrative constants anchor not found')
+          text = text.replace(old_constants, new_constants, 1)
+
+          old_helper = '''sideColor(int direction) => direction == market.DIR_LONG ? color.green : direction == market.DIR_SHORT ? color.red : color.gray
+
+          newZone'''
+          new_helper = '''sideColor(int direction) => direction == market.DIR_LONG ? color.green : direction == market.DIR_SHORT ? color.red : color.gray
+
+          tradeRoleFromDirection(int direction, int masterDirection) =>
+              masterDirection == market.DIR_NONE or direction == market.DIR_NONE ? TRADE_ROLE_NONE : direction == masterDirection ? TRADE_ROLE_SESSION : direction == -masterDirection ? TRADE_ROLE_JUDAS : TRADE_ROLE_NONE
+
+          sessionDeliveryRule(int direction) => direction == market.DIR_LONG ? "SESSION-DELIVERY-BUY" : "SESSION-DELIVERY-SELL"
+          sessionBgobRule(int direction, bool isMacro) => direction == market.DIR_LONG ? (isMacro ? "SESSION-MACRO-BGOB-BUY" : "SESSION-BGOB-BUY") : (isMacro ? "SESSION-MACRO-BGOB-SELL" : "SESSION-BGOB-SELL")
+
+          newZone'''
+          if old_helper not in text:
+              raise RuntimeError('Helper insertion anchor not found')
+          text = text.replace(old_helper, new_helper, 1)
+
+          old_session_state = '''var int phase = PHASE_WAIT
+          var int activeSessionId = -1
+          var int judasStartWindow = -1'''
+          new_session_state = '''var int phase = PHASE_WAIT
+          // This latch records an actual body-close disrespect of Session FPI.
+          // It is separate from phase and separate from trade classification.
+          var bool sessionDisrespectLatched = false
+          var int activeSessionId = -1
+          var int judasStartWindow = -1'''
+          if old_session_state not in text:
+              raise RuntimeError('Session state anchor not found')
+          text = text.replace(old_session_state, new_session_state, 1)
+
+          old_trade_state = '''var bool tradeActive = false
+          var bool tradeIsJudas = false
+          var int tradeDirection = market.DIR_NONE'''
+          new_trade_state = '''var bool tradeActive = false
+          var bool tradeIsJudas = false
+          var int tradeRole = TRADE_ROLE_NONE
+          var int tradeDirection = market.DIR_NONE'''
+          if old_trade_state not in text:
+              raise RuntimeError('Trade state anchor not found')
+          text = text.replace(old_trade_state, new_trade_state, 1)
+
+          old_new_session = '''    sessionDirection := market.DIR_NONE
+              phase := PHASE_WAIT
+              judasStartWindow := -1'''
+          new_new_session = '''    sessionDirection := market.DIR_NONE
+              phase := PHASE_WAIT
+              sessionDisrespectLatched := false
+              judasStartWindow := -1'''
+          if old_new_session not in text:
+              raise RuntimeError('New-session reset anchor not found')
+          text = text.replace(old_new_session, new_new_session, 1)
+
+          old_closed_trade = '''        tradeActive := false
+                  tradeIsJudas := false
+                  tradeDirection := market.DIR_NONE'''
+          new_closed_trade = '''        tradeActive := false
+                  tradeIsJudas := false
+                  tradeRole := TRADE_ROLE_NONE
+                  tradeDirection := market.DIR_NONE'''
+          if old_closed_trade not in text:
+              raise RuntimeError('Closed-trade reset anchor not found')
+          text = text.replace(old_closed_trade, new_closed_trade, 1)
+
+          old_disrespect = '''    if sessionDisrespect and phase != PHASE_JUDAS
+                  phase := PHASE_JUDAS
+                  judasStartWindow := currentWindow'''
+          new_disrespect = '''    if sessionDisrespect
+                  sessionDisrespectLatched := true
+                  if phase != PHASE_JUDAS
+                      phase := PHASE_JUDAS
+                      judasStartWindow := currentWindow'''
+          if old_disrespect not in text:
+              raise RuntimeError('Session disrespect anchor not found')
+          text = text.replace(old_disrespect, new_disrespect, 1)
+
+          old_session_fpi_set = '''        sessionDirection := fpiEvent.direction
+                  phase := PHASE_SESSION
+                  if drawFpiBoxes'''
+          new_session_fpi_set = '''        sessionDirection := fpiEvent.direction
+                  phase := PHASE_SESSION
+                  sessionDisrespectLatched := false
+                  if drawFpiBoxes'''
+          if old_session_fpi_set not in text:
+              raise RuntimeError('Session FPI initialization anchor not found')
+          text = text.replace(old_session_fpi_set, new_session_fpi_set, 1)
+
+          old_recovery_rule = '''            string recoveryRule = phase == PHASE_JUDAS ? (recoveryDirection == market.DIR_LONG ? "JUDAS-END-BUY" : "JUDAS-END-SELL") : (recoveryDirection == market.DIR_LONG ? "WINDOW-DELIVERY-BUY" : "WINDOW-DELIVERY-SELL")
+                      recoverySignal := market.makeSignal(recoveryDirection, market.FAMILY_30M_REVERSAL, recoveryFoundation.top, recoveryFoundation.bottom, recoveryFoundation.invalidation, recoveryFoundation.sourceBar, recoveryFoundation.sourceTime, currentWindow, recoveryFoundation.sourceBar, true, phase == PHASE_JUDAS, recoveryRule, "CONFIRMED_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT")'''
+          new_recovery_rule = '''            // Direction relative to Session FPI defines the role. A sell with a
+                      // bearish Session FPI is always Session delivery, even if the
+                      // campaign previously passed through PHASE_JUDAS.
+                      string recoveryRule = sessionDeliveryRule(recoveryDirection)
+                      recoverySignal := market.makeSignal(recoveryDirection, market.FAMILY_30M_REVERSAL, recoveryFoundation.top, recoveryFoundation.bottom, recoveryFoundation.invalidation, recoveryFoundation.sourceBar, recoveryFoundation.sourceTime, currentWindow, recoveryFoundation.sourceBar, true, false, recoveryRule, "SESSION_FPI_DIRECTION_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT")'''
+          if old_recovery_rule not in text:
+              raise RuntimeError('Recovery rule classification anchor not found')
+          text = text.replace(old_recovery_rule, new_recovery_rule, 1)
+
+          old_recovery_bgob = '''        recoveryBgobSignal := confirmedBgobSignal(alignedWindowBgob, recoveryDirection, currentWindow, recoveryDirection == market.DIR_LONG ? "WINDOW-BGOB-BUY" : "WINDOW-BGOB-SELL", "CONFIRMED_CURRENT_WINDOW_FPI_BGOB_RETEST_RESPECT")
+              if not recoveryBgobSignal.valid and enableMacroBgobEntries and macroBgob.active and macroBgob.direction == recoveryDirection and macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index
+                  recoveryBgobSignal := confirmedBgobSignal(macroBgob, recoveryDirection, currentWindow, recoveryDirection == market.DIR_LONG ? "MACRO-BGOB-BUY" : "MACRO-BGOB-SELL", "CONFIRMED_FIRST_MACRO_BGOB_RETEST_RESPECT")'''
+          new_recovery_bgob = '''        recoveryBgobSignal := confirmedBgobSignal(alignedWindowBgob, recoveryDirection, currentWindow, sessionBgobRule(recoveryDirection, false), "SESSION_DIRECTION_CURRENT_WINDOW_FPI_BGOB_RETEST_RESPECT")
+              if not recoveryBgobSignal.valid and enableMacroBgobEntries and macroBgob.active and macroBgob.direction == recoveryDirection and macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index
+                  recoveryBgobSignal := confirmedBgobSignal(macroBgob, recoveryDirection, currentWindow, sessionBgobRule(recoveryDirection, true), "SESSION_DIRECTION_FIRST_MACRO_BGOB_RETEST_RESPECT")'''
+          if old_recovery_bgob not in text:
+              raise RuntimeError('Recovery BGOB labels anchor not found')
+          text = text.replace(old_recovery_bgob, new_recovery_bgob, 1)
+
+          old_judas_authority = '''bool judasAuthorityPass = (localJudasAuthority or dualFpiJudasAuthority) and not (suspendJudasOnConfirmedSessionFoundation and sessionRecoveryBuildingNow)'''
+          new_judas_authority = '''bool judasAuthorityPass = sessionDisrespectLatched and (localJudasAuthority or dualFpiJudasAuthority) and not (suspendJudasOnConfirmedSessionFoundation and sessionRecoveryBuildingNow)'''
+          if old_judas_authority not in text:
+              raise RuntimeError('Judas authority anchor not found')
+          text = text.replace(old_judas_authority, new_judas_authority, 1)
+
+          old_cancel_block = '''    sessionMacroBreakLatched := false
+              sessionMacroBreakDirection := market.DIR_NONE
+              sessionMacroBreakBar := na
+              if not tradeIsJudas
+                  phase := PHASE_SESSION'''
+          new_cancel_block = '''    sessionMacroBreakLatched := false
+              sessionMacroBreakDirection := market.DIR_NONE
+              sessionMacroBreakBar := na
+              sessionDisrespectLatched := false
+              if not tradeIsJudas
+                  phase := PHASE_SESSION'''
+          if text.count(old_cancel_block) < 1:
+              raise RuntimeError('Stale-Judas cancellation anchor not found')
+          text = text.replace(old_cancel_block, new_cancel_block)
+
+          old_order_gate = '''bool canOpenOrReverse = (freshEntry or oppositeToTrade) and (not oneTradePerWindow or not windowTradeTaken)
+
+          if canSubmit and selectedSignal.valid and canOpenOrReverse
+              bool entryIsRecovery = sessionCandidateSignal.valid and selectedSignal.direction == sessionDirection
+              bool entryIsJudas = phase == PHASE_JUDAS and judasCandidateSignal.valid and selectedSignal.direction == judasDirection and not entryIsRecovery
+              float entryPrice = close'''
+          new_order_gate = '''bool canOpenOrReverse = (freshEntry or oppositeToTrade) and (not oneTradePerWindow or not windowTradeTaken)
+          int selectedTradeRole = selectedSignal.valid ? tradeRoleFromDirection(selectedSignal.direction, sessionDirection) : TRADE_ROLE_NONE
+          bool selectedCandidateMatchesRole = selectedTradeRole == TRADE_ROLE_SESSION ? sessionCandidateSignal.valid : selectedTradeRole == TRADE_ROLE_JUDAS ? judasCandidateSignal.valid : false
+
+          if canSubmit and selectedSignal.valid and selectedCandidateMatchesRole and canOpenOrReverse
+              bool entryIsRecovery = selectedTradeRole == TRADE_ROLE_SESSION
+              bool entryIsJudas = selectedTradeRole == TRADE_ROLE_JUDAS
+              float entryPrice = close'''
+          if old_order_gate not in text:
+              raise RuntimeError('Order role-classification anchor not found')
+          text = text.replace(old_order_gate, new_order_gate, 1)
+
+          old_trade_assignment = '''    tradeActive := true
+              tradeIsJudas := entryIsJudas
+              tradeDirection := selectedSignal.direction'''
+          new_trade_assignment = '''    tradeActive := true
+              tradeRole := selectedTradeRole
+              tradeIsJudas := selectedTradeRole == TRADE_ROLE_JUDAS
+              tradeDirection := selectedSignal.direction'''
+          if old_trade_assignment not in text:
+              raise RuntimeError('Trade role assignment anchor not found')
+          text = text.replace(old_trade_assignment, new_trade_assignment, 1)
+
+          old_recovery_transition = '''    if entryIsRecovery
+                  phase := PHASE_DELIVERY
+                  judasCompleted := true
+                  sessionMacroBreakLatched := false
+                  sessionMacroBreakDirection := market.DIR_NONE
+                  sessionMacroBreakBar := na'''
+          new_recovery_transition = '''    if entryIsRecovery
+                  phase := PHASE_DELIVERY
+                  judasCompleted := true
+                  sessionDisrespectLatched := false
+                  sessionMacroBreakLatched := false
+                  sessionMacroBreakDirection := market.DIR_NONE
+                  sessionMacroBreakBar := na'''
+          if old_recovery_transition not in text:
+              raise RuntimeError('Recovery transition anchor not found')
+          text = text.replace(old_recovery_transition, new_recovery_transition, 1)
+
+          old_diagnostics = '''plot(phase, "Campaign Phase", display = display.data_window)
+          plot(activeWindow, "Active 30m Window", display = display.data_window)'''
+          new_diagnostics = '''plot(phase, "Campaign Phase (Context Only)", display = display.data_window)
+          plot(sessionDisrespectLatched ? 1 : 0, "Session FPI Body-Close Disrespect Latched", display = display.data_window)
+          plot(tradeActive ? tradeRole : TRADE_ROLE_NONE, "Active Trade Role: 1 Session / 2 Judas", display = display.data_window)
+          plot(activeWindow, "Active 30m Window", display = display.data_window)'''
+          if old_diagnostics not in text:
+              raise RuntimeError('Diagnostics anchor not found')
+          text = text.replace(old_diagnostics, new_diagnostics, 1)
+
+          forbidden = [
+              '"JUDAS-END-BUY"',
+              '"JUDAS-END-SELL"',
+              'phase == PHASE_JUDAS and judasCandidateSignal.valid and selectedSignal.direction == judasDirection',
+          ]
+          for marker in forbidden:
+              if marker in text:
+                  raise RuntimeError(f'Obsolete role logic remains: {marker}')
+
+          required = [
+              'shorttitle = "PO3E952D"',
+              'TRADE_ROLE_SESSION',
+              'tradeRoleFromDirection',
+              'sessionDisrespectLatched and (localJudasAuthority or dualFpiJudasAuthority)',
+              'string recoveryRule = sessionDeliveryRule(recoveryDirection)',
+              'int selectedTradeRole = selectedSignal.valid ? tradeRoleFromDirection',
+              'tradeRole := selectedTradeRole',
+              'Active Trade Role: 1 Session / 2 Judas',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError(f'Missing V9.5.2 marker: {marker}')
+
+          target.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Static source checks
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Directional_Role_Matrix.pine')
+          text = p.read_text(encoding='utf-8')
+          pairs = {'(': ')', '[': ']', '{': '}'}
+          for left, right in pairs.items():
+              if text.count(left) != text.count(right):
+                  raise SystemExit(f'unbalanced {left}{right}: {text.count(left)} vs {text.count(right)}')
+          if len(text.splitlines()) < 900:
+              raise SystemExit('strategy unexpectedly truncated')
+          print('static checks passed:', len(text.splitlines()), 'lines')
+          PY
+
+      - name: Commit full strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Directional_Role_Matrix.pine
+          git commit -m "Add V9.5.2 directional Session and Judas role matrix"
+          git push origin HEAD:enigma-v9-3-window-narrative
