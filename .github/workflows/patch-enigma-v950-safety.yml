@@ -1,0 +1,98 @@
+name: Patch Enigma V9.5.0 Safety
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+      - name: Apply contained safety corrections
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine')
+          text = path.read_text(encoding='utf-8')
+
+          old_selector = '''    else
+                  result := selectMoreExtreme(librarySeed, bodySeriesSeed, direction)'''
+          new_selector = '''    else
+                  selectedFallback = selectMoreExtreme(librarySeed, bodySeriesSeed, direction)
+                  copyStructure(result, selectedFallback)'''
+          if old_selector not in text:
+              raise RuntimeError('foundation selector safety anchor not found')
+          text = text.replace(old_selector, new_selector, 1)
+
+          # The robust builder inserted this block at column zero. It belongs inside
+          # `if eligibleFpi`, while the following IMB/OB discovery must remain at the
+          # same four-space level rather than inside `if enableBgobEntries`.
+          pattern = re.compile(
+              r'(?ms)^// Every FPI may seed its third-candle BGOB\..*?(?=^    // Persist every current-window imbalance at formation\.)'
+          )
+          match = pattern.search(text)
+          if not match:
+              raise RuntimeError('BGOB indentation block not found')
+          block = match.group(0)
+          indented = '\n'.join(('    ' + line) if line else line for line in block.splitlines()) + ('\n' if block.endswith('\n') else '')
+          text = text[:match.start()] + indented + text[match.end():]
+
+          old_entry_classification = '''    bool entryIsRecovery = recoverySignal.valid and selectedSignal.direction == sessionDirection
+              bool entryIsJudas = phase == PHASE_JUDAS and selectedSignal.direction == judasDirection and not entryIsRecovery'''
+          new_entry_classification = '''    bool entryIsRecovery = sessionCandidateSignal.valid and selectedSignal.direction == sessionDirection
+              bool entryIsJudas = phase == PHASE_JUDAS and judasCandidateSignal.valid and selectedSignal.direction == judasDirection and not entryIsRecovery'''
+          if old_entry_classification not in text:
+              raise RuntimeError('entry classification anchor not found')
+          text = text.replace(old_entry_classification, new_entry_classification, 1)
+
+          old_session_build = '''bool sessionBuildReady = recoverySupport.active or sessionBgobBuilding or enableMacroBgobEntries and macroBgob.active and macroBgob.direction == sessionDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED)
+          bool judasBuildReady = judasSupport.active or judasBgobBuilding or enableMacroBgobEntries and macroBgob.active and macroBgob.direction == judasDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED)'''
+          new_session_build = '''bool macroBgobBuildingSession = enableMacroBgobEntries and macroBgob.active and macroBgob.direction == sessionDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index)
+          bool macroBgobBuildingJudas = enableMacroBgobEntries and macroBgob.active and macroBgob.direction == judasDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index)
+          bool sessionBuildReady = recoverySupport.active or sessionBgobBuilding or macroBgobBuildingSession
+          bool judasBuildReady = judasSupport.active or judasBgobBuilding or macroBgobBuildingJudas'''
+          if old_session_build not in text:
+              raise RuntimeError('macro BGOB build-lock anchor not found')
+          text = text.replace(old_session_build, new_session_build, 1)
+
+          old_lock_invalid = '''bool sessionLockInvalid = windowNarrative == NARRATIVE_SESSION_LOCKED and not recoverySupport.active and not sessionBgobBuilding and not (macroBgob.active and macroBgob.direction == sessionDirection and macroBgob.status != market.STATUS_INVALID)
+          bool judasLockInvalid = windowNarrative == NARRATIVE_JUDAS_LOCKED and not judasSupport.active and not judasBgobBuilding and not (macroBgob.active and macroBgob.direction == judasDirection and macroBgob.status != market.STATUS_INVALID)'''
+          new_lock_invalid = '''bool sessionLockInvalid = windowNarrative == NARRATIVE_SESSION_LOCKED and not recoverySupport.active and not sessionBgobBuilding and not macroBgobBuildingSession
+          bool judasLockInvalid = windowNarrative == NARRATIVE_JUDAS_LOCKED and not judasSupport.active and not judasBgobBuilding and not macroBgobBuildingJudas'''
+          if old_lock_invalid not in text:
+              raise RuntimeError('narrative lock invalidation anchor not found')
+          text = text.replace(old_lock_invalid, new_lock_invalid, 1)
+
+          required = [
+              'shorttitle = "PO3E950A"',
+              '    // Every FPI may seed its third-candle BGOB.',
+              'bool entryIsRecovery = sessionCandidateSignal.valid',
+              'macroBgobBuildingSession',
+              'selectedFallback = selectMoreExtreme',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise RuntimeError('missing safety markers: ' + ', '.join(missing))
+
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit safety patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_0_Adaptive_Narrative_Arbiter.pine
+          git commit -m "Patch V9.5.0 BGOB scope and narrative classification" || exit 0
+          git push origin HEAD:enigma-v9-3-window-narrative
