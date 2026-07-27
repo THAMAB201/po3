@@ -1,0 +1,258 @@
+name: Build Enigma V9.4.3 Causal Sequence
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-enigma-v943-causal.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Patch full Pine strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_2_Irreversible_IMB_Lifecycle.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_4_3_Causal_OB_BOLO_IMB_Sequence.pine')
+          text = source.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '"PO3 MMXM Enigma V9.4.2 Irreversible IMB Lifecycle",\n    shorttitle = "PO3E942I",',
+              '"PO3 MMXM Enigma V9.4.3 Causal OB BOLO IMB Sequence",\n    shorttitle = "PO3E943C",',
+              1,
+          )
+
+          old_foundation_helper = '''foundationBodyInvalid(structure, int direction) =>
+              direction == market.DIR_LONG ? close < structure.bottom : close > structure.top
+
+          bindImbCandidate'''
+
+          new_foundation_helper = '''foundationBodyInvalid(structure, int direction) =>
+              direction == market.DIR_LONG ? close < structure.bottom : close > structure.top
+
+          confirmFoundationAfterRetest(structure, int direction) =>
+              bool confirmedNow = false
+              if structure.active and not structure.used and structure.status == market.STATUS_BROKEN and not na(structure.breakBar) and bar_index > structure.breakBar
+                  bool invalid = foundationBodyInvalid(structure, direction)
+                  if invalid
+                      structure.status := market.STATUS_INVALID
+                      structure.active := false
+                      structure.used := true
+                      structure.touching := false
+                  else
+                      bool retest = market.overlaps(structure.top, structure.bottom, high, low)
+                      if retest
+                          structure.touching := true
+                      bool directionalPass = not requireDirectionalCandle or (direction == market.DIR_LONG ? close > open : close < open)
+                      bool outsideClose = direction == market.DIR_LONG ? close > structure.top : close < structure.bottom
+                      if structure.touching and outsideClose and directionalPass
+                          structure.status := market.STATUS_CONFIRMED
+                          structure.confirmBar := bar_index
+                          confirmedNow := true
+              confirmedNow
+
+          bindImbCandidate'''
+
+          if old_foundation_helper not in text:
+              raise RuntimeError('foundation helper anchor not found')
+          text = text.replace(old_foundation_helper, new_foundation_helper, 1)
+
+          old_causal = '''    bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED
+              bool causal = sourceLive and foundation.active and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and not na(source.breakBar)'''
+
+          new_causal = '''    bool sourceLive = source.active and not source.used and source.status == market.STATUS_ARMED
+              bool foundationLive = foundation.active and foundation.status == market.STATUS_CONFIRMED and not na(foundation.breakBar) and not na(foundation.confirmBar)
+              // The IMB must be created by the displacement that broke away from this
+              // exact OB/BOLO, or by a later displacement. Older pre-foundation IMBs
+              // cannot be promoted into a new sequence.
+              bool causal = sourceLive and foundationLive and source.sourceWindow == requiredWindow and windowFromTimestamp(source.sourceTime) == requiredWindow and source.sourceBar >= foundation.sourceBar and not na(source.breakBar) and source.breakBar >= foundation.breakBar'''
+
+          if old_causal not in text:
+              raise RuntimeError('causal bind anchor not found')
+          text = text.replace(old_causal, new_causal, 1)
+
+          old_eligible = '''bool eligibleFpi = isOneMinute and confirmedBar and inDecisionSession and currentWindow >= 0 and fpiEvent.valid and eventSession == currentSession and passesGapFilter and fpiWhollyCurrentWindow
+
+          if eligibleFpi'''
+          new_eligible = '''bool eligibleFpi = isOneMinute and confirmedBar and inDecisionSession and currentWindow >= 0 and fpiEvent.valid and eventSession == currentSession and passesGapFilter and fpiWhollyCurrentWindow
+          eventImb = market.newStructure()
+
+          if eligibleFpi'''
+          if old_eligible not in text:
+              raise RuntimeError('event IMB declaration anchor not found')
+          text = text.replace(old_eligible, new_eligible, 1)
+
+          old_imb = '''        imb.breakBar := bar_index
+                  imb.status := market.STATUS_ARMED
+                  imb.touching := false
+                  targetImb = fpiEvent.direction == market.DIR_LONG ? bullImbCandidate : bearImbCandidate'''
+          new_imb = '''        imb.breakBar := bar_index
+                  imb.status := market.STATUS_ARMED
+                  imb.touching := false
+                  copyStructure(eventImb, imb)
+                  targetImb = fpiEvent.direction == market.DIR_LONG ? bullImbCandidate : bearImbCandidate'''
+          if old_imb not in text:
+              raise RuntimeError('event IMB copy anchor not found')
+          text = text.replace(old_imb, new_imb, 1)
+
+          old_foundation_detection = '''    if displacementConfirms and bodyStillValid
+              combinedSeed.family := market.FAMILY_PRIMARY_OB
+              combinedSeed.status := market.STATUS_CONFIRMED
+              combinedSeed.confirmBar := bar_index
+              combinedSeed.breakBar := bar_index
+              combinedSeed.ruleId := fpiEvent.direction == market.DIR_LONG ? "OB-BOLO-BULL-02" : "OB-BOLO-BEAR-02"
+              combinedSeed.reason := "CURRENT_WINDOW_EXTREME_OB_BOLO_CONFIRMED_BY_DISPLACEMENT"
+              targetFoundation = fpiEvent.direction == market.DIR_LONG ? bullFoundationCandidate : bearFoundationCandidate
+              bool acceptedFoundation = armMoreExtreme(targetFoundation, combinedSeed, fpiEvent.direction)
+              if acceptedFoundation
+                  targetFoundation.status := market.STATUS_CONFIRMED
+                  targetFoundation.confirmBar := bar_index
+                  targetFoundation.breakBar := bar_index
+                  if drawStructureBoxes
+                      box foundationBox = newZone(targetFoundation.sourceTime, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, targetFoundation.top, targetFoundation.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish OB / BOLO" : "Bearish OB / BOLO", math.max(72, zoneTransparency - 8))
+                      array.push(drawings, foundationBox)
+
+
+          // =============================================================================
+          // Dynamic current-window recovery narrative'''
+
+          new_foundation_detection = '''    if displacementConfirms and bodyStillValid
+              // Displacement identifies the extreme OB/BOLO and arms it, but does
+              // not validate it. Validation requires a later retest and body-close
+              // respect of this exact foundation.
+              combinedSeed.family := market.FAMILY_PRIMARY_OB
+              combinedSeed.status := market.STATUS_BROKEN
+              combinedSeed.confirmBar := na
+              combinedSeed.breakBar := bar_index
+              combinedSeed.touching := false
+              combinedSeed.ruleId := fpiEvent.direction == market.DIR_LONG ? "OB-BOLO-BULL-01" : "OB-BOLO-BEAR-01"
+              combinedSeed.reason := "CURRENT_WINDOW_EXTREME_OB_BOLO_DISPLACEMENT_ARMED"
+              targetFoundation = fpiEvent.direction == market.DIR_LONG ? bullFoundationCandidate : bearFoundationCandidate
+              bool acceptedFoundation = armMoreExtreme(targetFoundation, combinedSeed, fpiEvent.direction)
+              if acceptedFoundation
+                  targetFoundation.status := market.STATUS_BROKEN
+                  targetFoundation.confirmBar := na
+                  targetFoundation.breakBar := bar_index
+                  targetFoundation.touching := false
+                  if drawStructureBoxes
+                      box foundationBox = newZone(targetFoundation.sourceTime, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, targetFoundation.top, targetFoundation.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish OB / BOLO ARMED" : "Bearish OB / BOLO ARMED", math.max(72, zoneTransparency - 8))
+                      array.push(drawings, foundationBox)
+
+          bool bullFoundationConfirmedNow = confirmFoundationAfterRetest(bullFoundationCandidate, market.DIR_LONG)
+          bool bearFoundationConfirmedNow = confirmFoundationAfterRetest(bearFoundationCandidate, market.DIR_SHORT)
+
+          // =============================================================================
+          // Dynamic current-window recovery narrative'''
+
+          if old_foundation_detection not in text:
+              raise RuntimeError('foundation detection anchor not found')
+          text = text.replace(old_foundation_detection, new_foundation_detection, 1)
+
+          old_recovery_bind = '''if recoveryWindowEligible and recoveryFoundation.active
+              if allowAlignedImb
+                  alignedImb = recoveryDirection == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
+                  if bindImbCandidate(recoverySupport, alignedImb, recoveryFoundation, recoveryDirection, currentWindow)
+                      windowState := WINDOW_IMB_ARMED
+              if allowOpposingImbReclaim
+                  opposingImb = recoveryDirection == market.DIR_LONG ? bearImbCandidate : bullImbCandidate
+                  if bindImbCandidate(recoverySupport, opposingImb, recoveryFoundation, recoveryDirection, currentWindow)
+                      windowState := WINDOW_IMB_ARMED'''
+
+          new_recovery_bind = '''if recoveryWindowEligible and recoveryFoundation.active
+              // Bind the live event directly so an older, more-extreme pre-foundation
+              // candidate cannot hide the IMB created by this foundation's displacement.
+              if eventImb.active and ((allowAlignedImb and eventImb.direction == recoveryDirection) or (allowOpposingImbReclaim and eventImb.direction == -recoveryDirection))
+                  if bindImbCandidate(recoverySupport, eventImb, recoveryFoundation, recoveryDirection, currentWindow)
+                      windowState := WINDOW_IMB_ARMED
+              if allowAlignedImb
+                  alignedImb = recoveryDirection == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
+                  if bindImbCandidate(recoverySupport, alignedImb, recoveryFoundation, recoveryDirection, currentWindow)
+                      windowState := WINDOW_IMB_ARMED
+              if allowOpposingImbReclaim
+                  opposingImb = recoveryDirection == market.DIR_LONG ? bearImbCandidate : bullImbCandidate
+                  if bindImbCandidate(recoverySupport, opposingImb, recoveryFoundation, recoveryDirection, currentWindow)
+                      windowState := WINDOW_IMB_ARMED'''
+
+          if old_recovery_bind not in text:
+              raise RuntimeError('recovery bind anchor not found')
+          text = text.replace(old_recovery_bind, new_recovery_bind, 1)
+
+          old_judas_bind = '''    if judasFoundation.active
+                  alignedJudasImb = judasDirection == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
+                  opposingJudasImb = judasDirection == market.DIR_LONG ? bearImbCandidate : bullImbCandidate
+                  if allowAlignedImb
+                      bindImbCandidate(judasSupport, alignedJudasImb, judasFoundation, judasDirection, currentWindow)
+                  if allowOpposingImbReclaim
+                      bindImbCandidate(judasSupport, opposingJudasImb, judasFoundation, judasDirection, currentWindow)'''
+
+          new_judas_bind = '''    if judasFoundation.active
+                  if eventImb.active and ((allowAlignedImb and eventImb.direction == judasDirection) or (allowOpposingImbReclaim and eventImb.direction == -judasDirection))
+                      bindImbCandidate(judasSupport, eventImb, judasFoundation, judasDirection, currentWindow)
+                  alignedJudasImb = judasDirection == market.DIR_LONG ? bullImbCandidate : bearImbCandidate
+                  opposingJudasImb = judasDirection == market.DIR_LONG ? bearImbCandidate : bullImbCandidate
+                  if allowAlignedImb
+                      bindImbCandidate(judasSupport, alignedJudasImb, judasFoundation, judasDirection, currentWindow)
+                  if allowOpposingImbReclaim
+                      bindImbCandidate(judasSupport, opposingJudasImb, judasFoundation, judasDirection, currentWindow)'''
+
+          if old_judas_bind not in text:
+              raise RuntimeError('judas bind anchor not found')
+          text = text.replace(old_judas_bind, new_judas_bind, 1)
+
+          text = text.replace(
+              '"CURRENT_WINDOW_OB_BOLO_THEN_BOUND_IMB_RETEST_RESPECT"',
+              '"VALIDATED_EXTREME_OB_BOLO_THEN_CAUSAL_HIGHEST_IMB_RETEST_RESPECT"',
+              1,
+          )
+          text = text.replace(
+              '"CURRENT_WINDOW_OB_BOLO_THEN_BOUND_IMB_RETEST_JUDAS"',
+              '"VALIDATED_EXTREME_OB_BOLO_THEN_CAUSAL_HIGHEST_IMB_RETEST_JUDAS"',
+              1,
+          )
+
+          diagnostic_anchor = '''plot(recoveryFoundationConfirmBar, "Recovery Foundation Confirm Bar", display = display.data_window)
+          plot(recoverySupport.active ? recoverySupport.bottom : na, "Bound IMB Bottom", display = display.data_window)'''
+          diagnostic_replacement = '''plot(recoveryFoundationConfirmBar, "Recovery Foundation Confirm Bar", display = display.data_window)
+          plot(bullFoundationCandidate.status, "Bull Foundation Lifecycle Status", display = display.data_window)
+          plot(bearFoundationCandidate.status, "Bear Foundation Lifecycle Status", display = display.data_window)
+          plot(recoverySupport.active ? recoverySupport.bottom : na, "Bound IMB Bottom", display = display.data_window)'''
+          if diagnostic_anchor not in text:
+              raise RuntimeError('diagnostic anchor not found')
+          text = text.replace(diagnostic_anchor, diagnostic_replacement, 1)
+
+          required = [
+              'shorttitle = "PO3E943C"',
+              'confirmFoundationAfterRetest',
+              'targetFoundation.status := market.STATUS_BROKEN',
+              'source.breakBar >= foundation.breakBar',
+              'copyStructure(eventImb, imb)',
+              'VALIDATED_EXTREME_OB_BOLO_THEN_CAUSAL_HIGHEST_IMB_RETEST_JUDAS',
+          ]
+          for item in required:
+              if item not in text:
+                  raise RuntimeError(f'missing patch marker: {item}')
+
+          target.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit generated strategy to working branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_4_3_Causal_OB_BOLO_IMB_Sequence.pine
+          git commit -m "Add V9.4.3 causal validated OB BOLO and IMB sequence"
+          git push origin HEAD:enigma-v9-3-window-narrative
