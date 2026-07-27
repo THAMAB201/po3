@@ -303,10 +303,10 @@ updateBgobLifecycle(structure, int direction) =>
                 confirmedNow := true
     confirmedNow
 
-confirmedBgobSignal(structure, int direction, string ruleId, string reasonText) =>
+confirmedBgobSignal(structure, int direction, int signalWindow, string ruleId, string reasonText) =>
     signal = market.newSignal()
     if structure.active and structure.status == market.STATUS_CONFIRMED and structure.confirmBar == bar_index
-        signal := market.makeSignal(direction, market.FAMILY_30M_REVERSAL, structure.top, structure.bottom, structure.invalidation, structure.sourceBar, structure.sourceTime, currentWindow, structure.sourceBar, true, false, ruleId, reasonText)
+        signal := market.makeSignal(direction, market.FAMILY_30M_REVERSAL, structure.top, structure.bottom, structure.invalidation, structure.sourceBar, structure.sourceTime, signalWindow, structure.sourceBar, true, false, ruleId, reasonText)
     signal
 
 bindImbCandidate(target, source, foundation, int direction, int requiredWindow) =>
@@ -333,8 +333,8 @@ bindImbCandidate(target, source, foundation, int direction, int requiredWindow) 
         target.reason := "ALIGNED_IMB_BOUND_TO_CONFIRMED_FOUNDATION"
     replace
 
-sameImbSource(first, second) =>
-    not na(first.sourceBar) and not na(second.sourceBar) and first.sourceBar == second.sourceBar and first.sourceTime == second.sourceTime
+sameImbSource(firstStructure, secondStructure) =>
+    not na(firstStructure.sourceBar) and not na(secondStructure.sourceBar) and firstStructure.sourceBar == secondStructure.sourceBar and firstStructure.sourceTime == secondStructure.sourceTime
 
 imbalanceDisrespected(structure, int originalDirection) =>
     structure.active and not structure.used and structure.status != market.STATUS_INVALID and (originalDirection == market.DIR_LONG ? close < structure.bottom : close > structure.top)
@@ -778,9 +778,9 @@ recoveryBgobSignal = market.newSignal()
 if recoveryWindowEligible and not windowResolved and enableBgobEntries
     alignedWindowBgob = recoveryDirection == market.DIR_LONG ? bullBgobCandidate : bearBgobCandidate
     if alignedWindowBgob.active and alignedWindowBgob.status == market.STATUS_CONFIRMED and alignedWindowBgob.confirmBar == bar_index
-        recoveryBgobSignal := confirmedBgobSignal(alignedWindowBgob, recoveryDirection, recoveryDirection == market.DIR_LONG ? "WINDOW-BGOB-BUY" : "WINDOW-BGOB-SELL", "CONFIRMED_CURRENT_WINDOW_FPI_BGOB_RETEST_RESPECT")
+        recoveryBgobSignal := confirmedBgobSignal(alignedWindowBgob, recoveryDirection, currentWindow, recoveryDirection == market.DIR_LONG ? "WINDOW-BGOB-BUY" : "WINDOW-BGOB-SELL", "CONFIRMED_CURRENT_WINDOW_FPI_BGOB_RETEST_RESPECT")
     if not recoveryBgobSignal.valid and enableMacroBgobEntries and macroBgob.active and macroBgob.direction == recoveryDirection and macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index
-        recoveryBgobSignal := confirmedBgobSignal(macroBgob, recoveryDirection, recoveryDirection == market.DIR_LONG ? "MACRO-BGOB-BUY" : "MACRO-BGOB-SELL", "CONFIRMED_FIRST_MACRO_BGOB_RETEST_RESPECT")
+        recoveryBgobSignal := confirmedBgobSignal(macroBgob, recoveryDirection, currentWindow, recoveryDirection == market.DIR_LONG ? "MACRO-BGOB-BUY" : "MACRO-BGOB-SELL", "CONFIRMED_FIRST_MACRO_BGOB_RETEST_RESPECT")
 
 // =============================================================================
 // Sequenced Judas narrative: current-window OB/BOLO -> bound IMB ->
@@ -835,9 +835,9 @@ judasBgobSignal = market.newSignal()
 if phase == PHASE_JUDAS and enableJudasTrades and not judasEntryTaken and judasAuthorityPass and not judasWindowResolved and enableBgobEntries
     alignedJudasBgob = judasDirection == market.DIR_LONG ? bullBgobCandidate : bearBgobCandidate
     if alignedJudasBgob.active and alignedJudasBgob.status == market.STATUS_CONFIRMED and alignedJudasBgob.confirmBar == bar_index
-        judasBgobSignal := confirmedBgobSignal(alignedJudasBgob, judasDirection, judasDirection == market.DIR_LONG ? "JUDAS-BGOB-BUY" : "JUDAS-BGOB-SELL", "CONFIRMED_CURRENT_WINDOW_BGOB_WITH_JUDAS_AUTHORITY")
+        judasBgobSignal := confirmedBgobSignal(alignedJudasBgob, judasDirection, currentWindow, judasDirection == market.DIR_LONG ? "JUDAS-BGOB-BUY" : "JUDAS-BGOB-SELL", "CONFIRMED_CURRENT_WINDOW_BGOB_WITH_JUDAS_AUTHORITY")
     if not judasBgobSignal.valid and enableMacroBgobEntries and macroBgob.active and macroBgob.direction == judasDirection and macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index
-        judasBgobSignal := confirmedBgobSignal(macroBgob, judasDirection, judasDirection == market.DIR_LONG ? "JUDAS-MACRO-BGOB-BUY" : "JUDAS-MACRO-BGOB-SELL", "CONFIRMED_FIRST_MACRO_BGOB_WITH_JUDAS_AUTHORITY")
+        judasBgobSignal := confirmedBgobSignal(macroBgob, judasDirection, currentWindow, judasDirection == market.DIR_LONG ? "JUDAS-MACRO-BGOB-BUY" : "JUDAS-MACRO-BGOB-SELL", "CONFIRMED_FIRST_MACRO_BGOB_WITH_JUDAS_AUTHORITY")
 
 // Cancel an old tactical break after price fully reclaims both controlling
 // FPIs toward Session direction. This prevents an old Judas latch from
