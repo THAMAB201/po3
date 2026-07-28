@@ -1,0 +1,52 @@
+name: Retry Enigma V9.5.2 Role Fix
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/triggers/retry-enigma-v952-role-fix.txt
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Run direct builder patch
+        shell: bash
+        run: |
+          git fetch origin main
+          python - <<'PY'
+          import subprocess
+
+          workflow = subprocess.check_output(
+              ['git', 'show', 'origin/main:.github/workflows/build-enigma-v952-role-fix-direct.yml'],
+              text=True,
+          )
+          lines = workflow.splitlines()
+          start = next(i for i, line in enumerate(lines) if line == "          python - <<'PY'")
+          end = next(i for i, line in enumerate(lines[start + 1:], start + 1) if line == "          PY")
+          code_lines = []
+          for line in lines[start + 1:end]:
+              code_lines.append(line[10:] if line.startswith('          ') else line)
+          code = '\n'.join(code_lines) + '\n'
+          exec(compile(code, 'v952_direct_builder.py', 'exec'))
+          PY
+
+      - name: Commit, rebase and push
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Immutable_Trade_Roles.pine
+          git diff --cached --quiet && exit 0
+          git commit -m "Add V9.5.2 immutable Session and Judas trade roles"
+          git pull --rebase origin enigma-v9-3-window-narrative
+          git push origin HEAD:enigma-v9-3-window-narrative
