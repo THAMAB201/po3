@@ -1,0 +1,1 @@
+Aligned Judas reversal foundations may use the first opposing-IMB reclaim close as the second component only when a validated aligned OB, aligned Session FPI, aligned original 9:50 Macro FPI, and a live opposing 30-minute FPI are present.

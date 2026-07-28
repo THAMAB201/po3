@@ -1,0 +1,319 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © SunovaBeach
+//@version=6
+// @description Dedicated Session-FPI foundation engine. Detects confirmed series order blocks, enters on the first successful OB retest/close, and retains post-OB IMBs for later continuation entries. It does not place orders or replace the full execution engine.
+library("PO3MMXMEnigmaFoundationEngine", overlay = true)
+
+const int SOURCE_NONE = 0
+const int SOURCE_ORDER_BLOCK = 1
+const int SOURCE_IMBALANCE = 2
+
+export type FoundationSignal
+    bool enterNow
+    int direction
+    float zoneTop
+    float zoneBottom
+    float stopPrice
+    int sourceKind
+    int sourceBar
+
+export step(bool enabled, bool inSession, bool sessionStart, int sessionFpiDirection) =>
+    // Bullish order-block run and candidate.
+    var bool bullRunActive = false
+    var float bullRunTop = na
+    var float bullRunBottom = na
+    var int bullRunEndBar = na
+    var bool bullCandidateFound = false
+    var float bullCandidateTop = na
+    var float bullCandidateBottom = na
+    var int bullCandidateEndBar = na
+    var int bullValidatedCandidateEndBar = na
+
+    // Confirmed bullish foundation.
+    var bool bullObConfirmed = false
+    var float bullObTop = na
+    var float bullObBottom = na
+    var int bullObConfirmBar = na
+    var bool bullObRetested = false
+    var bool bullObUsed = false
+
+    // Post-OB bullish continuation imbalance.
+    var bool bullImbFound = false
+    var float bullImbTop = na
+    var float bullImbBottom = na
+    var int bullImbFormationBar = na
+    var bool bullImbUsed = false
+
+    // Bearish order-block run and candidate.
+    var bool bearRunActive = false
+    var float bearRunTop = na
+    var float bearRunBottom = na
+    var int bearRunEndBar = na
+    var bool bearCandidateFound = false
+    var float bearCandidateTop = na
+    var float bearCandidateBottom = na
+    var int bearCandidateEndBar = na
+    var int bearValidatedCandidateEndBar = na
+
+    // Confirmed bearish foundation.
+    var bool bearObConfirmed = false
+    var float bearObTop = na
+    var float bearObBottom = na
+    var int bearObConfirmBar = na
+    var bool bearObRetested = false
+    var bool bearObUsed = false
+
+    // Post-OB bearish continuation imbalance.
+    var bool bearImbFound = false
+    var float bearImbTop = na
+    var float bearImbBottom = na
+    var int bearImbFormationBar = na
+    var bool bearImbUsed = false
+
+    if sessionStart
+        bullRunActive := false
+        bullRunTop := na
+        bullRunBottom := na
+        bullRunEndBar := na
+        bullCandidateFound := false
+        bullCandidateTop := na
+        bullCandidateBottom := na
+        bullCandidateEndBar := na
+        bullValidatedCandidateEndBar := na
+        bullObConfirmed := false
+        bullObTop := na
+        bullObBottom := na
+        bullObConfirmBar := na
+        bullObRetested := false
+        bullObUsed := false
+        bullImbFound := false
+        bullImbTop := na
+        bullImbBottom := na
+        bullImbFormationBar := na
+        bullImbUsed := false
+
+        bearRunActive := false
+        bearRunTop := na
+        bearRunBottom := na
+        bearRunEndBar := na
+        bearCandidateFound := false
+        bearCandidateTop := na
+        bearCandidateBottom := na
+        bearCandidateEndBar := na
+        bearValidatedCandidateEndBar := na
+        bearObConfirmed := false
+        bearObTop := na
+        bearObBottom := na
+        bearObConfirmBar := na
+        bearObRetested := false
+        bearObUsed := false
+        bearImbFound := false
+        bearImbTop := na
+        bearImbBottom := na
+        bearImbFormationBar := na
+        bearImbUsed := false
+
+    bool enterNow = false
+    int signalDirection = 0
+    float signalTop = na
+    float signalBottom = na
+    float signalStop = na
+    int signalSourceKind = SOURCE_NONE
+    int signalSourceBar = na
+
+    if enabled and inSession and barstate.isconfirmed
+        bool bearishBody = close < open
+        bool bullishBody = close > open
+
+        // Build the most recent completed consecutive down-close run.
+        if bearishBody
+            if not bullRunActive
+                bullRunActive := true
+                bullRunTop := high
+                bullRunBottom := low
+            else
+                bullRunTop := math.max(bullRunTop, high)
+                bullRunBottom := math.min(bullRunBottom, low)
+            bullRunEndBar := bar_index
+        else if bullRunActive
+            bullCandidateFound := true
+            bullCandidateTop := bullRunTop
+            bullCandidateBottom := bullRunBottom
+            bullCandidateEndBar := bullRunEndBar
+            bullRunActive := false
+            bullRunTop := na
+            bullRunBottom := na
+            bullRunEndBar := na
+
+        // Build the most recent completed consecutive up-close run.
+        if bullishBody
+            if not bearRunActive
+                bearRunActive := true
+                bearRunTop := high
+                bearRunBottom := low
+            else
+                bearRunTop := math.max(bearRunTop, high)
+                bearRunBottom := math.min(bearRunBottom, low)
+            bearRunEndBar := bar_index
+        else if bearRunActive
+            bearCandidateFound := true
+            bearCandidateTop := bearRunTop
+            bearCandidateBottom := bearRunBottom
+            bearCandidateEndBar := bearRunEndBar
+            bearRunActive := false
+            bearRunTop := na
+            bearRunBottom := na
+            bearRunEndBar := na
+
+        // A close beyond the candidate confirms the OB. The confirmation candle itself
+        // is a valid first retest when it physically trades through the zone and closes out.
+        bool bullValidationNow = bullCandidateFound and bullCandidateEndBar != bullValidatedCandidateEndBar and close > bullCandidateTop
+        if bullValidationNow
+            bullValidatedCandidateEndBar := bullCandidateEndBar
+            bullObConfirmed := true
+            bullObTop := bullCandidateTop
+            bullObBottom := bullCandidateBottom
+            bullObConfirmBar := bar_index
+            bullObRetested := false
+            bullObUsed := false
+            bullImbFound := false
+            bullImbTop := na
+            bullImbBottom := na
+            bullImbFormationBar := na
+            bullImbUsed := false
+
+            bool confirmationRetestedOb = low <= bullObTop and high >= bullObBottom
+            if sessionFpiDirection == 1 and confirmationRetestedOb and close > bullObTop
+                bullObRetested := true
+                bullObUsed := true
+                enterNow := true
+                signalDirection := 1
+                signalTop := bullObTop
+                signalBottom := bullObBottom
+                signalStop := bullObBottom
+                signalSourceKind := SOURCE_ORDER_BLOCK
+                signalSourceBar := bullCandidateEndBar
+
+        bool bearValidationNow = bearCandidateFound and bearCandidateEndBar != bearValidatedCandidateEndBar and close < bearCandidateBottom
+        if bearValidationNow
+            bearValidatedCandidateEndBar := bearCandidateEndBar
+            bearObConfirmed := true
+            bearObTop := bearCandidateTop
+            bearObBottom := bearCandidateBottom
+            bearObConfirmBar := bar_index
+            bearObRetested := false
+            bearObUsed := false
+            bearImbFound := false
+            bearImbTop := na
+            bearImbBottom := na
+            bearImbFormationBar := na
+            bearImbUsed := false
+
+            bool confirmationRetestedOb = high >= bearObBottom and low <= bearObTop
+            if sessionFpiDirection == -1 and confirmationRetestedOb and close < bearObBottom
+                bearObRetested := true
+                bearObUsed := true
+                enterNow := true
+                signalDirection := -1
+                signalTop := bearObTop
+                signalBottom := bearObBottom
+                signalStop := bearObTop
+                signalSourceKind := SOURCE_ORDER_BLOCK
+                signalSourceBar := bearCandidateEndBar
+
+        // When confirmation occurred away from the zone, use the first later physical
+        // retest and directional close. No imbalance is required for this primary entry.
+        bool bullLaterRetestNow = bullObConfirmed and not bullObRetested and not bullObUsed and not na(bullObConfirmBar) and bar_index > bullObConfirmBar and low <= bullObTop and high >= bullObBottom and close > bullObTop
+        if not enterNow and sessionFpiDirection == 1 and bullLaterRetestNow
+            bullObRetested := true
+            bullObUsed := true
+            enterNow := true
+            signalDirection := 1
+            signalTop := bullObTop
+            signalBottom := bullObBottom
+            signalStop := bullObBottom
+            signalSourceKind := SOURCE_ORDER_BLOCK
+            signalSourceBar := bullObConfirmBar
+
+        bool bearLaterRetestNow = bearObConfirmed and not bearObRetested and not bearObUsed and not na(bearObConfirmBar) and bar_index > bearObConfirmBar and high >= bearObBottom and low <= bearObTop and close < bearObBottom
+        if not enterNow and sessionFpiDirection == -1 and bearLaterRetestNow
+            bearObRetested := true
+            bearObUsed := true
+            enterNow := true
+            signalDirection := -1
+            signalTop := bearObTop
+            signalBottom := bearObBottom
+            signalStop := bearObTop
+            signalSourceKind := SOURCE_ORDER_BLOCK
+            signalSourceBar := bearObConfirmBar
+
+        // Hard close invalidation removes the foundation and any continuation IMB.
+        if bullObConfirmed and close < bullObBottom
+            bullObConfirmed := false
+            bullObRetested := false
+            bullObUsed := false
+            bullImbFound := false
+            bullImbUsed := false
+        if bearObConfirmed and close > bearObTop
+            bearObConfirmed := false
+            bearObRetested := false
+            bearObUsed := false
+            bearImbFound := false
+            bearImbUsed := false
+
+        // A directional three-candle imbalance created after the successful OB retest
+        // becomes a separate continuation setup. Retain the lowest bullish or highest bearish.
+        bool bullishImbalanceNow = bar_index >= 2 and close[1] > open[1] and high[2] < low
+        float currentBullImbTop = bullishImbalanceNow ? low : na
+        float currentBullImbBottom = bullishImbalanceNow ? high[2] : na
+        if bullishImbalanceNow and bullObConfirmed and bullObRetested and bar_index > bullObConfirmBar
+            bool replaceBullImb = not bullImbFound or currentBullImbBottom < bullImbBottom
+            if replaceBullImb
+                bullImbFound := true
+                bullImbTop := currentBullImbTop
+                bullImbBottom := currentBullImbBottom
+                bullImbFormationBar := bar_index
+                bullImbUsed := false
+
+        bool bearishImbalanceNow = bar_index >= 2 and close[1] < open[1] and low[2] > high
+        float currentBearImbTop = bearishImbalanceNow ? low[2] : na
+        float currentBearImbBottom = bearishImbalanceNow ? high : na
+        if bearishImbalanceNow and bearObConfirmed and bearObRetested and bar_index > bearObConfirmBar
+            bool replaceBearImb = not bearImbFound or currentBearImbTop > bearImbTop
+            if replaceBearImb
+                bearImbFound := true
+                bearImbTop := currentBearImbTop
+                bearImbBottom := currentBearImbBottom
+                bearImbFormationBar := bar_index
+                bearImbUsed := false
+
+        bool bullImbRetestNow = bullImbFound and not bullImbUsed and bar_index > bullImbFormationBar and low <= bullImbTop and high >= bullImbBottom and close > bullImbTop
+        if not enterNow and sessionFpiDirection == 1 and bullImbRetestNow and bullObConfirmed and bullObRetested and close >= bullObBottom
+            bullImbUsed := true
+            enterNow := true
+            signalDirection := 1
+            signalTop := bullImbTop
+            signalBottom := bullImbBottom
+            signalStop := math.min(bullObBottom, bullImbBottom)
+            signalSourceKind := SOURCE_IMBALANCE
+            signalSourceBar := bullImbFormationBar
+
+        bool bearImbRetestNow = bearImbFound and not bearImbUsed and bar_index > bearImbFormationBar and high >= bearImbBottom and low <= bearImbTop and close < bearImbBottom
+        if not enterNow and sessionFpiDirection == -1 and bearImbRetestNow and bearObConfirmed and bearObRetested and close <= bearObTop
+            bearImbUsed := true
+            enterNow := true
+            signalDirection := -1
+            signalTop := bearImbTop
+            signalBottom := bearImbBottom
+            signalStop := math.max(bearObTop, bearImbTop)
+            signalSourceKind := SOURCE_IMBALANCE
+            signalSourceBar := bearImbFormationBar
+
+        if bullImbFound and close < bullImbBottom
+            bullImbFound := false
+            bullImbUsed := false
+        if bearImbFound and close > bearImbTop
+            bearImbFound := false
+            bearImbUsed := false
+
+    FoundationSignal.new(enterNow, signalDirection, signalTop, signalBottom, signalStop, signalSourceKind, signalSourceBar)

@@ -1,0 +1,665 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// © SunovaBeach
+//@version=6
+// @description PO3 MMXM Enigma shared state manager: risk management, series order-block validation, persistent retests, early foundation entry, and narrative hold upgrades.
+library("PO3MMXMEnigmaStateManager", overlay = false)
+
+export const int DIR_NONE = 0
+export const int DIR_LONG = 1
+export const int DIR_SHORT = -1
+
+// =====================================================================================================
+// TRADE-MANAGEMENT ENGINE
+// =====================================================================================================
+export type EnigmaConfig
+    float minimumExpansionPoints
+    float expansionPullbackPoints
+    int minimumLegBars
+    int cautionWarningCount
+    int hardWarningCount
+    float givebackWatchPoints
+    float maximumGivebackPoints
+    int requiredOpposingConfirmations
+
+export type EnigmaState
+    bool active = false
+    int direction = 0
+    float entryPrice = na
+    int entryBar = na
+    float bestFavorablePoints = 0.0
+    float bestClose = na
+    float referenceExtreme = na
+    float attemptExtreme = na
+    int attemptStartBar = na
+    array<int> expansionResults
+    bool opposingPulseLast = false
+    int opposingConfirmations = 0
+    bool blockEntries = false
+    int blockedDirection = 0
+    float releaseLevel = na
+    int lastExitBar = na
+    int lastWarningMask = 0
+    int lastWarningCount = 0
+    string lastReason = ""
+
+export type EnigmaDecision
+    bool cautionExit = false
+    bool hardExit = false
+    bool entriesBlocked = false
+    bool releasePulse = false
+    int warningCount = 0
+    int warningMask = 0
+    string reason = "WAIT"
+
+export type FoundationEntryDecision
+    bool enterNow = false
+    bool earlyReversal = false
+    bool narrativeConfirmed = false
+    string reason = "WAIT"
+
+export newConfig(
+    float minimumExpansionPoints,
+    float expansionPullbackPoints,
+    int minimumLegBars,
+    int cautionWarningCount,
+    int hardWarningCount,
+    float givebackWatchPoints,
+    float maximumGivebackPoints,
+    int requiredOpposingConfirmations
+) =>
+    EnigmaConfig.new(
+        minimumExpansionPoints,
+        expansionPullbackPoints,
+        minimumLegBars,
+        cautionWarningCount,
+        hardWarningCount,
+        givebackWatchPoints,
+        maximumGivebackPoints,
+        requiredOpposingConfirmations
+    )
+
+export newState() =>
+    EnigmaState.new(expansionResults = array.new<int>())
+
+recordExpansion(array<int> results, int result) =>
+    array.push(results, result)
+    while array.size(results) > 3
+        array.shift(results)
+    0
+
+failedExpansionCount(array<int> results) =>
+    int failures = 0
+    int count = array.size(results)
+    if count > 0
+        for index = 0 to count - 1
+            failures += array.get(results, index) == 0 ? 1 : 0
+    failures
+
+resetTradeTracking(EnigmaState state) =>
+    state.active := false
+    state.direction := DIR_NONE
+    state.entryPrice := na
+    state.entryBar := na
+    state.bestFavorablePoints := 0.0
+    state.bestClose := na
+    state.referenceExtreme := na
+    state.attemptExtreme := na
+    state.attemptStartBar := na
+    array.clear(state.expansionResults)
+    state.opposingPulseLast := false
+    state.opposingConfirmations := 0
+    state.lastWarningMask := 0
+    state.lastWarningCount := 0
+    state.lastReason := ""
+    0
+
+export resetSession(EnigmaState state) =>
+    resetTradeTracking(state)
+    state.blockEntries := false
+    state.blockedDirection := DIR_NONE
+    state.releaseLevel := na
+    state.lastExitBar := na
+    0
+
+startTrade(EnigmaState state, int direction, float entryPrice, int entryBar, int currentBar, float closeValue) =>
+    state.active := true
+    state.direction := direction
+    state.entryPrice := entryPrice
+    state.entryBar := entryBar
+    state.bestFavorablePoints := 0.0
+    state.bestClose := closeValue
+    state.referenceExtreme := closeValue
+    state.attemptExtreme := closeValue
+    state.attemptStartBar := currentBar
+    array.clear(state.expansionResults)
+    state.opposingPulseLast := false
+    state.opposingConfirmations := 0
+    state.lastWarningMask := 0
+    state.lastWarningCount := 0
+    state.lastReason := ""
+    0
+
+updateExpansion(EnigmaState state, EnigmaConfig config, int currentBar, float closeValue) =>
+    if state.active and state.direction != DIR_NONE
+        if na(state.referenceExtreme)
+            state.referenceExtreme := closeValue
+        if na(state.attemptExtreme)
+            state.attemptExtreme := closeValue
+        if na(state.attemptStartBar)
+            state.attemptStartBar := currentBar
+
+        int attemptBars = currentBar - state.attemptStartBar
+        if state.direction == DIR_LONG
+            state.attemptExtreme := math.max(state.attemptExtreme, closeValue)
+            bool succeeded = closeValue >= state.referenceExtreme + config.minimumExpansionPoints
+            bool failed = not succeeded and attemptBars >= config.minimumLegBars and state.attemptExtreme - closeValue >= config.expansionPullbackPoints
+            if succeeded
+                recordExpansion(state.expansionResults, 1)
+                state.referenceExtreme := closeValue
+                state.attemptExtreme := closeValue
+                state.attemptStartBar := currentBar
+            else if failed
+                recordExpansion(state.expansionResults, 0)
+                state.referenceExtreme := math.max(state.referenceExtreme, state.attemptExtreme)
+                state.attemptExtreme := closeValue
+                state.attemptStartBar := currentBar
+        else
+            state.attemptExtreme := math.min(state.attemptExtreme, closeValue)
+            bool succeeded = closeValue <= state.referenceExtreme - config.minimumExpansionPoints
+            bool failed = not succeeded and attemptBars >= config.minimumLegBars and closeValue - state.attemptExtreme >= config.expansionPullbackPoints
+            if succeeded
+                recordExpansion(state.expansionResults, 1)
+                state.referenceExtreme := closeValue
+                state.attemptExtreme := closeValue
+                state.attemptStartBar := currentBar
+            else if failed
+                recordExpansion(state.expansionResults, 0)
+                state.referenceExtreme := math.min(state.referenceExtreme, state.attemptExtreme)
+                state.attemptExtreme := closeValue
+                state.attemptStartBar := currentBar
+    0
+
+releaseSatisfied(EnigmaState state, float closeValue, float priorClose) =>
+    bool released = false
+    if state.blockEntries and not na(state.releaseLevel)
+        released := state.blockedDirection == DIR_LONG ? closeValue > state.releaseLevel and closeValue > priorClose : closeValue < state.releaseLevel and closeValue < priorClose
+    released
+
+export step(
+    EnigmaState state,
+    EnigmaConfig config,
+    bool resetNow,
+    bool tradeOpen,
+    int direction,
+    float entryPrice,
+    int entryBar,
+    int currentBar,
+    float highValue,
+    float lowValue,
+    float closeValue,
+    float priorClose,
+    bool macroFailure,
+    bool controllerFailure,
+    bool opposingStructurePulse,
+    bool foundationStress
+) =>
+    EnigmaDecision decision = EnigmaDecision.new()
+
+    if resetNow
+        resetSession(state)
+
+    if not tradeOpen and releaseSatisfied(state, closeValue, priorClose)
+        state.blockEntries := false
+        state.blockedDirection := DIR_NONE
+        state.releaseLevel := na
+        decision.releasePulse := true
+        decision.reason := "REQUALIFIED_HH_LL_CLOSE"
+
+    bool newTrade = tradeOpen and (not state.active or state.direction != direction or state.entryBar != entryBar)
+    if newTrade
+        startTrade(state, direction, entryPrice, entryBar, currentBar, closeValue)
+        state.blockEntries := false
+        state.blockedDirection := DIR_NONE
+        state.releaseLevel := na
+
+    if tradeOpen and state.active
+        float favorablePoints = direction == DIR_LONG ? highValue - state.entryPrice : state.entryPrice - lowValue
+        float closeProfit = direction == DIR_LONG ? closeValue - state.entryPrice : state.entryPrice - closeValue
+        state.bestFavorablePoints := math.max(state.bestFavorablePoints, favorablePoints)
+        state.bestClose := direction == DIR_LONG ? math.max(state.bestClose, closeValue) : math.min(state.bestClose, closeValue)
+
+        updateExpansion(state, config, currentBar, closeValue)
+
+        if opposingStructurePulse and not state.opposingPulseLast
+            state.opposingConfirmations += 1
+        state.opposingPulseLast := opposingStructurePulse
+
+        bool failedExpansionWarning = array.size(state.expansionResults) >= 3 and failedExpansionCount(state.expansionResults) >= 2
+        bool opposingWarning = state.opposingConfirmations >= config.requiredOpposingConfirmations
+        bool givebackWarning = state.bestFavorablePoints >= config.givebackWatchPoints and state.bestFavorablePoints - closeProfit >= config.maximumGivebackPoints
+
+        int warningMask = 0
+        warningMask += macroFailure ? 1 : 0
+        warningMask += controllerFailure ? 2 : 0
+        warningMask += failedExpansionWarning ? 4 : 0
+        warningMask += opposingWarning ? 8 : 0
+        warningMask += foundationStress ? 16 : 0
+        warningMask += givebackWarning ? 32 : 0
+
+        int warningCount = (macroFailure ? 1 : 0) + (controllerFailure ? 1 : 0) + (failedExpansionWarning ? 1 : 0) + (opposingWarning ? 1 : 0) + (foundationStress ? 1 : 0) + (givebackWarning ? 1 : 0)
+        bool qualityFailurePresent = failedExpansionWarning or opposingWarning or foundationStress or givebackWarning
+        bool hardExit = warningCount >= config.hardWarningCount and qualityFailurePresent
+        bool cautionExit = not hardExit and warningCount >= config.cautionWarningCount and qualityFailurePresent
+
+        decision.warningCount := warningCount
+        decision.warningMask := warningMask
+        decision.hardExit := hardExit
+        decision.cautionExit := cautionExit
+        decision.reason := hardExit ? "HARD_MULTI_CONFLUENCE_EXIT" : cautionExit ? "CAUTION_FAILED_EXPANSION_EXIT" : warningCount > 0 ? "CAUTION_MONITOR" : "HOLD"
+
+        state.lastWarningMask := warningMask
+        state.lastWarningCount := warningCount
+        state.lastReason := decision.reason
+
+        if hardExit or cautionExit
+            state.blockEntries := true
+            state.blockedDirection := direction
+            state.releaseLevel := direction == DIR_LONG ? math.max(state.referenceExtreme, state.attemptExtreme) : math.min(state.referenceExtreme, state.attemptExtreme)
+            state.lastExitBar := currentBar
+
+    if not tradeOpen and state.active
+        state.active := false
+        state.direction := DIR_NONE
+        state.entryPrice := na
+        state.entryBar := na
+
+    decision.entriesBlocked := state.blockEntries
+    decision
+
+// =====================================================================================================
+// FOUNDATION ENTRY / HOLD-UPGRADE RESOLVERS
+// Keeps structural entry timing separate from later narrative confirmation.
+// =====================================================================================================
+export resolveFoundationEntry(
+    int direction,
+    bool foundationReady,
+    bool hasOrderBlock,
+    bool hasImbalance,
+    bool componentsRespected,
+    bool alreadyUsed,
+    int confirmationBar,
+    int currentBar,
+    bool directionalConfirmationClose,
+    bool controllerAligned,
+    bool macroOriginAligned,
+    bool macroFoundationExpectation,
+    bool counterControllerSetup,
+    bool localFpiReclaimed,
+    bool sessionReclaimed,
+    bool macroReclaimed,
+    bool macroCloseOverride,
+    bool reversalModeActive,
+    int reversalModeDirection,
+    bool allowControllerAlignedEntry,
+    bool allowEarlyCounterControllerEntry
+) =>
+    FoundationEntryDecision decision = FoundationEntryDecision.new()
+
+    bool completeFoundation = foundationReady and hasOrderBlock and hasImbalance and componentsRespected and not alreadyUsed and not na(confirmationBar) and currentBar >= confirmationBar
+    bool reversalModeAllows = not reversalModeActive or reversalModeDirection == direction
+    bool alignedPermission = allowControllerAlignedEntry and controllerAligned and macroOriginAligned
+    bool transitionPermission = counterControllerSetup and (localFpiReclaimed or macroCloseOverride) and (sessionReclaimed or macroCloseOverride) and macroReclaimed
+    bool earlyPermission = allowEarlyCounterControllerEntry and counterControllerSetup and currentBar == confirmationBar and directionalConfirmationClose
+
+    decision.enterNow := completeFoundation and reversalModeAllows and (macroFoundationExpectation or alignedPermission or transitionPermission or earlyPermission)
+    decision.earlyReversal := decision.enterNow and earlyPermission and not transitionPermission and not macroFoundationExpectation and not alignedPermission
+    decision.narrativeConfirmed := decision.enterNow and (macroFoundationExpectation or alignedPermission or transitionPermission)
+    decision.reason := decision.earlyReversal ? "EARLY_EXTREME_FOUNDATION_ENTRY" : decision.narrativeConfirmed ? "NARRATIVE_CONFIRMED_FOUNDATION_ENTRY" : "WAIT"
+    decision
+
+export holdUpgradeConfirmed(
+    bool tradeOpen,
+    int tradeDirection,
+    bool earlyReversal,
+    bool alreadyConfirmed,
+    bool amPhaseActive,
+    bool macroFound,
+    int macroDirection,
+    float macroTop,
+    float macroBottom,
+    bool sessionFound,
+    int sessionDirection,
+    float sessionTop,
+    float sessionBottom,
+    float closeValue
+) =>
+    bool opposingMacroPresent = amPhaseActive and macroFound and macroDirection == -tradeDirection
+    bool macroFarEdgeReclaimed = opposingMacroPresent and (tradeDirection == DIR_LONG ? closeValue > macroTop : closeValue < macroBottom)
+    bool opposingSessionPresent = sessionFound and sessionDirection == -tradeDirection
+    bool sessionFarEdgeReclaimed = opposingSessionPresent and (tradeDirection == DIR_LONG ? closeValue > sessionTop : closeValue < sessionBottom)
+    bool requiredNarrativeReclaim = opposingMacroPresent ? macroFarEdgeReclaimed : sessionFarEdgeReclaimed
+    tradeOpen and earlyReversal and not alreadyConfirmed and requiredNarrativeReclaim
+
+// =====================================================================================================
+// MULTI-CANDIDATE ORDER-BLOCK REGISTRY
+// Keeps every phase candidate and selects the lowest RESPECTED bullish OB or highest RESPECTED bearish OB.
+// A lower/higher unconfirmed or failed candidate can no longer hide a valid respected candidate.
+// =====================================================================================================
+const int OB_FORMED = 0
+const int OB_BROKEN = 1
+const int OB_RESPECTED = 2
+const int OB_INVALID = -1
+
+export type ObRegistryState
+    int phase = 0
+    int capacity = 24
+    bool bullRunActive = false
+    float bullRunTop = na
+    float bullRunBottom = na
+    int bullRunStartTime = na
+    int bullRunEndBar = na
+    bool bearRunActive = false
+    float bearRunTop = na
+    float bearRunBottom = na
+    int bearRunStartTime = na
+    int bearRunEndBar = na
+    array<int> directions
+    array<float> tops
+    array<float> bottoms
+    array<int> startTimes
+    array<int> endBars
+    array<int> breakBars
+    array<int> statuses
+
+export type ObDecision
+    // First close through the complete consecutive-candle OB series.
+    // This is validation/arming, not necessarily an entry.
+    bool bullValidation = false
+    float bullValidationTop = na
+    float bullValidationBottom = na
+    int bullValidationStartTime = na
+    int bullValidationEndBar = na
+    int bullValidationBar = na
+    bool bearValidation = false
+    float bearValidationTop = na
+    float bearValidationBottom = na
+    int bearValidationStartTime = na
+    int bearValidationEndBar = na
+    int bearValidationBar = na
+    // Later physical retest and directional outside close.
+    bool bullSignal = false
+    bool bearSignal = false
+    float bullSignalTop = na
+    float bullSignalBottom = na
+    int bullSignalStartTime = na
+    int bullSignalEndBar = na
+    float bearSignalTop = na
+    float bearSignalBottom = na
+    int bearSignalStartTime = na
+    int bearSignalEndBar = na
+    bool bullFound = false
+    float bullTop = na
+    float bullBottom = na
+    int bullStartTime = na
+    int bullEndBar = na
+    bool bullBreakConfirmed = false
+    int bullBreakBar = na
+    bool bullUsed = false
+    bool bearFound = false
+    float bearTop = na
+    float bearBottom = na
+    int bearStartTime = na
+    int bearEndBar = na
+    bool bearBreakConfirmed = false
+    int bearBreakBar = na
+    bool bearUsed = false
+
+export newObRegistry(int capacity) =>
+    ObRegistryState.new(
+        capacity = capacity,
+        directions = array.new<int>(),
+        tops = array.new<float>(),
+        bottoms = array.new<float>(),
+        startTimes = array.new<int>(),
+        endBars = array.new<int>(),
+        breakBars = array.new<int>(),
+        statuses = array.new<int>()
+    )
+
+clearObArrays(ObRegistryState state) =>
+    array.clear(state.directions)
+    array.clear(state.tops)
+    array.clear(state.bottoms)
+    array.clear(state.startTimes)
+    array.clear(state.endBars)
+    array.clear(state.breakBars)
+    array.clear(state.statuses)
+    0
+
+export resetObRegistry(ObRegistryState state, int phase) =>
+    state.phase := phase
+    state.bullRunActive := false
+    state.bullRunTop := na
+    state.bullRunBottom := na
+    state.bullRunStartTime := na
+    state.bullRunEndBar := na
+    state.bearRunActive := false
+    state.bearRunTop := na
+    state.bearRunBottom := na
+    state.bearRunStartTime := na
+    state.bearRunEndBar := na
+    clearObArrays(state)
+    0
+
+shiftOldestOb(ObRegistryState state) =>
+    if array.size(state.directions) > 0
+        array.shift(state.directions)
+        array.shift(state.tops)
+        array.shift(state.bottoms)
+        array.shift(state.startTimes)
+        array.shift(state.endBars)
+        array.shift(state.breakBars)
+        array.shift(state.statuses)
+    0
+
+addObCandidate(ObRegistryState state, int direction, float top, float bottom, int startTime, int endBar) =>
+    while array.size(state.directions) >= state.capacity
+        shiftOldestOb(state)
+    array.push(state.directions, direction)
+    array.push(state.tops, top)
+    array.push(state.bottoms, bottom)
+    array.push(state.startTimes, startTime)
+    array.push(state.endBars, endBar)
+    array.push(state.breakBars, na)
+    array.push(state.statuses, OB_FORMED)
+    0
+
+selectObIndex(ObRegistryState state, int direction, int requiredStatus) =>
+    int selected = -1
+    float selectedBoundary = na
+    int count = array.size(state.directions)
+    if count > 0
+        for index = 0 to count - 1
+            int candidateDirection = array.get(state.directions, index)
+            int candidateStatus = array.get(state.statuses, index)
+            bool eligible = candidateDirection == direction and candidateStatus == requiredStatus
+            if eligible
+                float candidateBoundary = direction == DIR_LONG ? array.get(state.bottoms, index) : array.get(state.tops, index)
+                bool moreExtreme = na(selectedBoundary) or (direction == DIR_LONG ? candidateBoundary < selectedBoundary : candidateBoundary > selectedBoundary)
+                if moreExtreme
+                    selected := index
+                    selectedBoundary := candidateBoundary
+    selected
+
+selectActiveObIndex(ObRegistryState state, int direction) =>
+    // Sequence construction must see the most extreme VALIDATED series even when
+    // an older respected OB also exists. Status >= OB_BROKEN means the complete
+    // series has received a close through its far edge.
+    int selected = -1
+    float selectedBoundary = na
+    int selectedEndBar = na
+    int count = array.size(state.directions)
+    if count > 0
+        for index = 0 to count - 1
+            int candidateDirection = array.get(state.directions, index)
+            int candidateStatus = array.get(state.statuses, index)
+            bool eligible = candidateDirection == direction and candidateStatus >= OB_BROKEN
+            if eligible
+                float candidateBoundary = direction == DIR_LONG ? array.get(state.bottoms, index) : array.get(state.tops, index)
+                int candidateEndBar = array.get(state.endBars, index)
+                bool moreExtreme = na(selectedBoundary) or (direction == DIR_LONG ? candidateBoundary < selectedBoundary : candidateBoundary > selectedBoundary)
+                bool sameExtremeNewer = not na(selectedBoundary) and candidateBoundary == selectedBoundary and (na(selectedEndBar) or candidateEndBar > selectedEndBar)
+                if moreExtreme or sameExtremeNewer
+                    selected := index
+                    selectedBoundary := candidateBoundary
+                    selectedEndBar := candidateEndBar
+    selected
+
+fillSelectedOb(ObDecision decision, ObRegistryState state, int direction, int index) =>
+    if index >= 0
+        int status = array.get(state.statuses, index)
+        if direction == DIR_LONG
+            decision.bullFound := true
+            decision.bullTop := array.get(state.tops, index)
+            decision.bullBottom := array.get(state.bottoms, index)
+            decision.bullStartTime := array.get(state.startTimes, index)
+            decision.bullEndBar := array.get(state.endBars, index)
+            decision.bullBreakConfirmed := status >= OB_BROKEN
+            decision.bullBreakBar := array.get(state.breakBars, index)
+            decision.bullUsed := status == OB_RESPECTED
+        else
+            decision.bearFound := true
+            decision.bearTop := array.get(state.tops, index)
+            decision.bearBottom := array.get(state.bottoms, index)
+            decision.bearStartTime := array.get(state.startTimes, index)
+            decision.bearEndBar := array.get(state.endBars, index)
+            decision.bearBreakConfirmed := status >= OB_BROKEN
+            decision.bearBreakBar := array.get(state.breakBars, index)
+            decision.bearUsed := status == OB_RESPECTED
+    0
+
+export stepObRegistry(
+    ObRegistryState state,
+    bool resetNow,
+    int phase,
+    int currentBar,
+    int currentTime,
+    float openValue,
+    float highValue,
+    float lowValue,
+    float closeValue
+) =>
+    ObDecision decision = ObDecision.new()
+
+    if resetNow or state.phase != phase
+        resetObRegistry(state, phase)
+
+    bool downClose = closeValue < openValue
+    bool upClose = closeValue > openValue
+
+    if downClose
+        if not state.bullRunActive
+            state.bullRunActive := true
+            state.bullRunTop := highValue
+            state.bullRunBottom := lowValue
+            state.bullRunStartTime := currentTime
+        else
+            state.bullRunTop := math.max(state.bullRunTop, highValue)
+            state.bullRunBottom := math.min(state.bullRunBottom, lowValue)
+        state.bullRunEndBar := currentBar
+    else if state.bullRunActive
+        addObCandidate(state, DIR_LONG, state.bullRunTop, state.bullRunBottom, state.bullRunStartTime, state.bullRunEndBar)
+        state.bullRunActive := false
+        state.bullRunTop := na
+        state.bullRunBottom := na
+        state.bullRunStartTime := na
+        state.bullRunEndBar := na
+
+    if upClose
+        if not state.bearRunActive
+            state.bearRunActive := true
+            state.bearRunTop := highValue
+            state.bearRunBottom := lowValue
+            state.bearRunStartTime := currentTime
+        else
+            state.bearRunTop := math.max(state.bearRunTop, highValue)
+            state.bearRunBottom := math.min(state.bearRunBottom, lowValue)
+        state.bearRunEndBar := currentBar
+    else if state.bearRunActive
+        addObCandidate(state, DIR_SHORT, state.bearRunTop, state.bearRunBottom, state.bearRunStartTime, state.bearRunEndBar)
+        state.bearRunActive := false
+        state.bearRunTop := na
+        state.bearRunBottom := na
+        state.bearRunStartTime := na
+        state.bearRunEndBar := na
+
+    int count = array.size(state.directions)
+    if count > 0
+        for index = 0 to count - 1
+            int direction = array.get(state.directions, index)
+            int status = array.get(state.statuses, index)
+            float top = array.get(state.tops, index)
+            float bottom = array.get(state.bottoms, index)
+            int endBar = array.get(state.endBars, index)
+            int breakBar = array.get(state.breakBars, index)
+
+            if status != OB_INVALID and currentBar > endBar
+                bool invalidated = direction == DIR_LONG ? closeValue < bottom : closeValue > top
+                if invalidated
+                    array.set(state.statuses, index, OB_INVALID)
+                else if status == OB_FORMED
+                    bool brokeAway = direction == DIR_LONG ? closeValue > top : closeValue < bottom
+                    if brokeAway
+                        array.set(state.statuses, index, OB_BROKEN)
+                        array.set(state.breakBars, index, currentBar)
+                        // A close through the complete consecutive-candle series validates it.
+                        // Emit a distinct pulse so an inverse IMB may become the later,
+                        // executable second component without requiring an OB retest first.
+                        if direction == DIR_LONG
+                            bool betterBullValidation = not decision.bullValidation or bottom < decision.bullValidationBottom
+                            if betterBullValidation
+                                decision.bullValidation := true
+                                decision.bullValidationTop := top
+                                decision.bullValidationBottom := bottom
+                                decision.bullValidationStartTime := array.get(state.startTimes, index)
+                                decision.bullValidationEndBar := endBar
+                                decision.bullValidationBar := currentBar
+                        else
+                            bool betterBearValidation = not decision.bearValidation or top > decision.bearValidationTop
+                            if betterBearValidation
+                                decision.bearValidation := true
+                                decision.bearValidationTop := top
+                                decision.bearValidationBottom := bottom
+                                decision.bearValidationStartTime := array.get(state.startTimes, index)
+                                decision.bearValidationEndBar := endBar
+                                decision.bearValidationBar := currentBar
+                else if status == OB_BROKEN and not na(breakBar) and currentBar > breakBar
+                    bool retested = direction == DIR_LONG ? lowValue <= top and highValue >= bottom : highValue >= bottom and lowValue <= top
+                    bool confirmed = direction == DIR_LONG ? closeValue > top : closeValue < bottom
+                    if retested and confirmed
+                        array.set(state.statuses, index, OB_RESPECTED)
+                        if direction == DIR_LONG
+                            bool betterBullSignal = not decision.bullSignal or bottom < decision.bullSignalBottom
+                            if betterBullSignal
+                                decision.bullSignal := true
+                                decision.bullSignalTop := top
+                                decision.bullSignalBottom := bottom
+                                decision.bullSignalStartTime := array.get(state.startTimes, index)
+                                decision.bullSignalEndBar := endBar
+                        else
+                            bool betterBearSignal = not decision.bearSignal or top > decision.bearSignalTop
+                            if betterBearSignal
+                                decision.bearSignal := true
+                                decision.bearSignalTop := top
+                                decision.bearSignalBottom := bottom
+                                decision.bearSignalStartTime := array.get(state.startTimes, index)
+                                decision.bearSignalEndBar := endBar
+
+    // Sequence construction uses the most extreme validated series, regardless of
+    // whether an older respected OB exists. Respect signals remain separate above.
+    int bullSelected = selectActiveObIndex(state, DIR_LONG)
+    int bearSelected = selectActiveObIndex(state, DIR_SHORT)
+
+    fillSelectedOb(decision, state, DIR_LONG, bullSelected)
+    fillSelectedOb(decision, state, DIR_SHORT, bearSelected)
+    decision

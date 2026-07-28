@@ -1,0 +1,500 @@
+    bool pullback = array.get(ledger.pullback, window)
+    float windowPoints = array.get(ledger.closedPoints, window)
+    bool windowHasOpenTrade = false
+    if count > 0
+        for slot = 0 to count - 1
+            windowHasOpenTrade := windowHasOpenTrade or array.get(ledger.openRows, ledgerIndex(window, slot))
+    box tradeCell = array.get(ledger.tradeCells, window)
+    box entryCell = array.get(ledger.entryCells, window)
+    box slCell = array.get(ledger.slCells, window)
+    box tpCell = array.get(ledger.tpCells, window)
+    box resultCell = array.get(ledger.resultCells, window)
+    string heldEntry = holding and count == 0 and recordedTradeOpen ? priceText(recordedEntry) : "-"
+    string heldSl = holding and count == 0 and recordedTradeOpen ? priceText(recordedSl) : "-"
+    int displayedBiasDirection = reversalModeActive ? reversalModeDirection : sessionAnchorDirection
+    string heldNarrative = holding ? "HOLDING\nMAIN BIAS: " + (displayedBiasDirection == 1 ? "BULLISH" : displayedBiasDirection == -1 ? "BEARISH" : "WAITING") + (reversalModeActive ? "\nREVERSAL MODE" : pullback ? "\nPOTENTIAL PULLBACK INTERVAL" : "") : "-"
+    if not na(tradeCell)
+        box.set_text(tradeCell, periodLabel(window) + "\nTRADE\n" + ledgerColumn(ledger.tradeRows, window, count, heldNarrative))
+    if not na(entryCell)
+        box.set_text(entryCell, "ENTRY\n" + ledgerColumn(ledger.entryRows, window, count, heldEntry))
+    if not na(slCell)
+        box.set_text(slCell, "SL\n" + ledgerColumn(ledger.slRows, window, count, heldSl))
+    if not na(tpCell)
+        box.set_text(tpCell, "TP\n" + ledgerColumn(ledger.tpRows, window, count, "-"))
+    if not na(resultCell)
+        box.set_text(resultCell, "PTS " + signedPointNumber(windowPoints) + "\n" + ledgerColumn(ledger.resultRows, window, count, holding ? "HOLDING" : "NO TRADE"))
+        box.set_bgcolor(resultCell, (holding or windowHasOpenTrade) and windowPoints == 0 ? color.new(#0b7285, 12) : resultColor(windowPoints))
+    0
+
+writeLedgerRow(
+    LedgerRefs ledger,
+    int window,
+    int slot,
+    int dir,
+    float entryPrice,
+    float slPrice,
+    float tpPrice,
+    float pointResult,
+    bool isOpen,
+    bool recordedTradeOpen,
+    float recordedEntry,
+    float recordedSl,
+    bool reversalModeActive,
+    int reversalModeDirection,
+    int sessionAnchorDirection
+) =>
+    int index = ledgerIndex(window, slot)
+    bool wasOpen = array.get(ledger.openRows, index)
+    if isOpen and na(array.get(ledger.entryTimes, index))
+        array.set(ledger.entryTimes, index, time)
+    if not isOpen and wasOpen and not na(pointResult)
+        array.set(ledger.closedPoints, window, array.get(ledger.closedPoints, window) + pointResult)
+    array.set(ledger.tradeRows, index, sideText(dir))
+    array.set(ledger.entryRows, index, priceText(entryPrice))
+    array.set(ledger.slRows, index, priceText(slPrice))
+    array.set(ledger.tpRows, index, na(tpPrice) and isOpen ? "OPP SIGNAL" : priceText(tpPrice))
+    array.set(ledger.resultRows, index, isOpen ? "OPEN" : signedPointNumber(pointResult))
+    array.set(ledger.openRows, index, isOpen)
+    renderLedger(ledger, window, recordedTradeOpen, recordedEntry, recordedSl, reversalModeActive, reversalModeDirection, sessionAnchorDirection)
+
+
+makeLedgerCell(int left, int right, float top, float bottom, string cellText) =>
+    box.new(left=left, top=top, right=right, bottom=bottom, xloc=xloc.bar_time, border_color=color.new(color.black, 0), border_width=1, bgcolor=color.new(#212529, 12), text=cellText, text_size=size.normal, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center, text_font_family=font.family_monospace)
+
+
+export run(EnigmaConfig cfg) =>
+    bool inSession = not na(time(timeframe.period, NY_SESSION, TZ))
+    bool isOneMinute = timeframe.isminutes and timeframe.multiplier == 1
+    bool isSubMinuteVisualTimeframe = timeframe.isseconds
+    bool isHigherVisualTimeframe = timeframe.isminutes and timeframe.multiplier > 1 and timeframe.multiplier <= MAX_VISUAL_TIMEFRAME_MINUTES
+    bool isVisualTimeframe = isSubMinuteVisualTimeframe or isOneMinute or isHigherVisualTimeframe
+
+    bool drawStructureVisuals = cfg.showFpiBoxes and not cfg.entriesOnlyMode
+    bool drawStructureTags = cfg.showFpiTags and not cfg.entriesOnlyMode
+    bool drawPeriodDividers = cfg.showPeriodDividers and not cfg.entriesOnlyMode
+    bool drawPeriodTables = cfg.showPeriodTradeTables and not cfg.entriesOnlyMode
+    bool drawSessionResults = cfg.showSessionResults and not cfg.entriesOnlyMode
+    bool drawConfluenceStatus = cfg.showConfluenceStatus and not cfg.entriesOnlyMode
+    bool drawExecutionTriangles = cfg.showExecutionTriangles
+    bool drawClosedTradeLines = cfg.showClosedTradeLines
+
+    var enigmaCore.EnigmaConfig enigmaConfig = enigmaCore.newConfig(
+        cfg.enigmaMinimumExpansionPoints,
+        cfg.enigmaExpansionPullbackPoints,
+        cfg.enigmaMinimumLegBars,
+        cfg.enigmaCautionWarnings,
+        cfg.enigmaHardWarnings,
+        cfg.enigmaGivebackWatchPoints,
+        cfg.enigmaMaximumGivebackPoints,
+        cfg.enigmaOpposingConfirmations
+    )
+    var enigmaCore.EnigmaState enigmaState = enigmaCore.newState()
+    var enigmaCore.ObRegistryState obRegistryState = enigmaCore.newObRegistry(24)
+
+    // Period, FPI, and trade state
+    // -----------------------------------------------------------------------------------------------------
+    var int stateWindow = -1
+    var array<bool> selectedByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<int> intervalFpiOriginalDirection = array.new<int>(LAST_WINDOW_ID + 1, 0)
+    var array<float> intervalFpiTop = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> intervalFpiBottom = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> intervalFpiThreeCandleHigh = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> intervalFpiThreeCandleLow = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<bool> intervalFpiDisrespected = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalFpiRespected = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<int> intervalFpiFormationBar = array.new<int>(LAST_WINDOW_ID + 1, na)
+    var array<bool> intervalFpiPersistentAcceptanceSeen = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<int> intervalFpiPersistentAcceptanceBar = array.new<int>(LAST_WINDOW_ID + 1, na)
+    var array<bool> intervalFpiReversalUsed = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalBullStructureValidated = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalBearStructureValidated = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalBullObValidated = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalBearObValidated = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalBullImbValidated = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalBearImbValidated = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    // Opposing IMB components are reversal confluence, not standalone trade direction.
+    // Bullish pair = failed/retested bearish IMB. Bearish pair = failed/retested bullish IMB.
+    var array<bool> intervalBullOpposingImbValidated = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalBearOpposingImbValidated = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<float> intervalBullStructureTop = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> intervalBullStructureBottom = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> intervalBearStructureTop = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> intervalBearStructureBottom = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<int> intervalBullStructureKind = array.new<int>(LAST_WINDOW_ID + 1, SOURCE_NONE)
+    var array<int> intervalBearStructureKind = array.new<int>(LAST_WINDOW_ID + 1, SOURCE_NONE)
+    var array<bool> intervalBullEntryUsed = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalBearEntryUsed = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    // A completed interval becomes durable support/resistance only after its own FPI
+    // and a matching structural foundation have both validated. The most extreme of
+    // those two boundaries is frozen as that interval's economic hold authority.
+    var array<bool> intervalAuthorityQualified = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> intervalAuthorityValid = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<int> intervalAuthorityDirection = array.new<int>(LAST_WINDOW_ID + 1, 0)
+    var array<float> intervalAuthorityBoundary = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<int> intervalAuthorityKind = array.new<int>(LAST_WINDOW_ID + 1, SOURCE_NONE)
+    var array<int> intervalAuthorityQualifiedBar = array.new<int>(LAST_WINDOW_ID + 1, na)
+    var array<bool> bgobValidByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> bgobUsedByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<int> bgobDirectionByWindow = array.new<int>(LAST_WINDOW_ID + 1, 0)
+    var array<float> bgobTopByWindow = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> bgobBottomByWindow = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<int> bgobFormationBarByWindow = array.new<int>(LAST_WINDOW_ID + 1, na)
+    var array<bool> bgobBreakConfirmedByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<int> bgobBreakBarByWindow = array.new<int>(LAST_WINDOW_ID + 1, na)
+    // A matching IMB fully contained inside a BGOB is retained as an internal trigger.
+    // The inner IMB supplies timing; the outer BGOB supplies the governing stop/hold zone.
+    var array<bool> nestedBgobImbValidByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> nestedBgobImbUsedByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<int> nestedBgobImbDirectionByWindow = array.new<int>(LAST_WINDOW_ID + 1, 0)
+    var array<float> nestedBgobImbTopByWindow = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> nestedBgobImbBottomByWindow = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> nestedBgobOuterTopByWindow = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<float> nestedBgobOuterBottomByWindow = array.new<float>(LAST_WINDOW_ID + 1, na)
+    var array<int> nestedBgobImbFormationBarByWindow = array.new<int>(LAST_WINDOW_ID + 1, na)
+    var array<int> nestedBgobImbStartTimeByWindow = array.new<int>(LAST_WINDOW_ID + 1, na)
+    var array<bool> nestedBgobImbBreakConfirmedByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<int> nestedBgobImbBreakBarByWindow = array.new<int>(LAST_WINDOW_ID + 1, na)
+    var array<box> tradeCellByWindow = array.new<box>(LAST_WINDOW_ID + 1, na)
+    var array<box> entryCellByWindow = array.new<box>(LAST_WINDOW_ID + 1, na)
+    var array<box> slCellByWindow = array.new<box>(LAST_WINDOW_ID + 1, na)
+    var array<box> tpCellByWindow = array.new<box>(LAST_WINDOW_ID + 1, na)
+    var array<box> resultCellByWindow = array.new<box>(LAST_WINDOW_ID + 1, na)
+
+    var array<int> ledgerCountByWindow = array.new<int>(LAST_WINDOW_ID + 1, 0)
+    var array<string> ledgerTradeRows = array.new<string>((LAST_WINDOW_ID + 1) * MAX_LEDGER_ROWS, "")
+    var array<string> ledgerEntryRows = array.new<string>((LAST_WINDOW_ID + 1) * MAX_LEDGER_ROWS, "")
+    var array<string> ledgerSlRows = array.new<string>((LAST_WINDOW_ID + 1) * MAX_LEDGER_ROWS, "")
+    var array<string> ledgerTpRows = array.new<string>((LAST_WINDOW_ID + 1) * MAX_LEDGER_ROWS, "")
+    var array<string> ledgerResultRows = array.new<string>((LAST_WINDOW_ID + 1) * MAX_LEDGER_ROWS, "")
+    var array<int> ledgerEntryTimeRows = array.new<int>((LAST_WINDOW_ID + 1) * MAX_LEDGER_ROWS, na)
+    var array<bool> ledgerOpenRows = array.new<bool>((LAST_WINDOW_ID + 1) * MAX_LEDGER_ROWS, false)
+    var array<float> ledgerClosedPointsByWindow = array.new<float>(LAST_WINDOW_ID + 1, 0.0)
+    var array<bool> holdingByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var array<bool> pullbackByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+
+    var bool pendingFpi = false
+    var int pendingDirection = 0
+    var float pendingTop = na
+    var float pendingBottom = na
+    var int pendingBar = na
+    var int pendingWindow = -1
+    var box pendingBox = na
+    var bool pendingAcceptanceConfirmed = false
+    var int pendingAcceptanceBar = na
+
+    var int activeNyPhase = SESSION_PHASE_NONE
+    var bool sessionAnchorFpiFound = false
+    var int sessionAnchorDirection = 0
+    var float sessionAnchorTop = na
+    var float sessionAnchorBottom = na
+    var int sessionAnchorWindow = -1
+    var int sessionAnchorBar = na
+    var box sessionAnchorBox = na
+    var int sessionFpiRegime = SESSION_REGIME_UNRESOLVED
+    var bool sessionAlignmentProvenByLaterFpi = false
+    var bool sessionAnchorResolutionComplete = false
+    var bool sessionAnchorAcceptanceConfirmed = false
+    var int sessionAnchorAcceptanceBar = na
+
+    // The AM 9:30 FPI and PM 1:30 FPI share one opening-window failure rule: close any open trade and wait for
+    // the next 30-minute divider. It never performs an immediate same-bar failure reversal.
+    var bool openingFpiDisrespectConsumed = false
+    var bool openingFpiWindowLock = false
+    var int openingFpiLockWindow = -1
+
+    // Every respected same-session structure is retained independently. FPI and
+    // order-block boundaries fail on close; BGOB confluence fails on movement beyond 50%.
+    var array<int> confluenceKind = array.new<int>(0)
+    var array<int> confluenceSourceBar = array.new<int>(0)
+    var array<int> confluenceWindow = array.new<int>(0)
+    var array<float> confluenceTop = array.new<float>(0)
+    var array<float> confluenceBottom = array.new<float>(0)
+    var array<float> confluenceBoundary = array.new<float>(0)
+    var array<bool> confluenceValid = array.new<bool>(0)
+    var array<box> confluenceStructureBox = array.new<box>(0)
+
+    // Bullish session order block = the lowest completed consecutive down-close run.
+    // Bearish session order block = the highest completed consecutive up-close run.
+    var bool bullishObRunActive = false
+    var float bullishObRunTop = na
+    var float bullishObRunBottom = na
+    var int bullishObRunStartTime = na
+    var int bullishObRunEndBar = na
+    var bool bullishObCandidateFound = false
+    var float bullishObCandidateTop = na
+    var float bullishObCandidateBottom = na
+    var int bullishObCandidateStartTime = na
+    var int bullishObCandidateEndBar = na
+    var bool bullishObBreakConfirmed = false
+    var int bullishObBreakBar = na
+    var bool bullishObCandidateUsed = false
+
+    var bool bearishObRunActive = false
+    var float bearishObRunTop = na
+    var float bearishObRunBottom = na
+    var int bearishObRunStartTime = na
+    var int bearishObRunEndBar = na
+    var bool bearishObCandidateFound = false
+    var float bearishObCandidateTop = na
+    var float bearishObCandidateBottom = na
+    var int bearishObCandidateStartTime = na
+    var int bearishObCandidateEndBar = na
+    var bool bearishObBreakConfirmed = false
+    var int bearishObBreakBar = na
+    var bool bearishObCandidateUsed = false
+
+    // Lowest bullish / highest bearish imbalance discovered inside the active interval.
+    var bool bullishImbCandidateFound = false
+    var float bullishImbCandidateTop = na
+    var float bullishImbCandidateBottom = na
+    var int bullishImbFormationBar = na
+    var int bullishImbStartTime = na
+    var bool bullishImbBreakConfirmed = false
+    var int bullishImbBreakBar = na
+    var bool bullishImbCandidateUsed = false
+    var bool bearishImbCandidateFound = false
+    var float bearishImbCandidateTop = na
+    var float bearishImbCandidateBottom = na
+    var int bearishImbFormationBar = na
+    var int bearishImbStartTime = na
+    var bool bearishImbBreakConfirmed = false
+    var int bearishImbBreakBar = na
+    var bool bearishImbCandidateUsed = false
+
+    // Order-independent reversal-pair IMBs.
+    // For a bullish foundation, retain the lowest bearish IMB, require a close above it,
+    // then a later overlap and another close above. The bearish case is symmetric.
+    var bool bullPairBearImbFound = false
+    var float bullPairBearImbTop = na
+    var float bullPairBearImbBottom = na
+    var int bullPairBearImbFormationBar = na
+    var int bullPairBearImbStartTime = na
+    var int bullPairBearImbWindow = -1
+    var bool bullPairBearImbReclaimConfirmed = false
+    var int bullPairBearImbReclaimBar = na
+    var bool bullPairBearImbUsed = false
+
+    var bool bearPairBullImbFound = false
+    var float bearPairBullImbTop = na
+    var float bearPairBullImbBottom = na
+    var int bearPairBullImbFormationBar = na
+    var int bearPairBullImbStartTime = na
+    var int bearPairBullImbWindow = -1
+    var bool bearPairBullImbReclaimConfirmed = false
+    var int bearPairBullImbReclaimBar = na
+    var bool bearPairBullImbUsed = false
+
+    var bool activeHasFpi = false
+    var bool activeFpiValid = false
+    var bool activeProtectionEnabled = false
+    var int activeTradeDirection = 0
+    var float activeTop = na
+    var float activeBottom = na
+    var float activeInvalidation = na
+    var int activeFpiBar = na
+    var box activeFpiBox = na
+    var bool activeCanReverse = true
+    var int activeSourceKind = SOURCE_NONE
+    var int activeSourceWindow = -1
+    var int activeRetestCount = 0
+    var bool activeTouchedLast = false
+    var bool activeSecondRetestConsumed = false
+
+    var bool fpiRequalificationWatch = false
+    var int fpiRequalificationDirection = 0
+    var float fpiRequalificationTop = na
+    var float fpiRequalificationBottom = na
+    var int fpiRequalificationWindow = -1
+    var int fpiRequalificationBar = na
+    var bool fpiRequalificationAcceptanceConfirmed = false
+    var int fpiRequalificationAcceptanceBar = na
+
+    var bool macro950Found = false
+    var int macro950Direction = 0
+    var float macro950Top = na
+    var float macro950Bottom = na
+    var int macro950FormationBar = na
+    var bool macro950InitialSignalUsed = false
+    var bool macro950AcceptanceConfirmed = false
+    var int macro950AcceptanceBar = na
+    var int macro950AuthorityDirection = 0
+    var int macro950AuthorityBar = na
+    var bool macro950AuthorityRetestConfirmed = false
+    var bool macro950OppositeRetestPending = false
+    var box macro950Box = na
+
+    // Independent 9:50-10:10 range state lives in the compact catalog library.
+    var catalog.MacroRangeState catalogRange = catalog.newMacroRangeState()
+    var bool catalogSessionDisrespectedLatched = false
+    var label catalogAuditLabel = na
+
+    // The third candle of the 9:50 Macro FPI is retained as a dedicated Macro BGOB.
+    // When price closes through its far edge, the candle becomes an opposite-direction
+    // breaker. A later retest plus directional close confirms the MMBM/MMSM structure.
+    var bool macro950BgobActive = false
+    var int macro950BgobOriginalDirection = 0
+    var int macro950BgobDirection = 0
+    var float macro950BgobTop = na
+    var float macro950BgobBottom = na
+    var int macro950BgobFormationBar = na
+    var int macro950BgobStartTime = na
+    var bool macro950BgobFlipConfirmed = false
+    var int macro950BgobFlipBar = na
+    var bool macro950BgobUsed = false
+    var box macro950BgobBox = na
+
+    // Higher-chart visual reconstruction state. Execution remains strictly one-minute;
+    // these variables rebuild the one-minute FPI drawings without changing order timing.
+    var array<bool> mtfSelectedByWindow = array.new<bool>(LAST_WINDOW_ID + 1, false)
+    var bool mtfMacro950Found = false
+    var int mtfSessionAnchorDirection = 0
+    var array<float> mtfOrderBlockState = array.new<float>(26, na)
+    var int mtfLastProcessedTime = na
+    var int mtfPrevious2Time = na
+    var float mtfPrevious2High = na
+    var float mtfPrevious2Low = na
+    var int mtfPrevious1Time = na
+    var float mtfPrevious1Open = na
+    var float mtfPrevious1High = na
+    var float mtfPrevious1Low = na
+    var float mtfPrevious1Close = na
+
+    var float lastSwingHighClose = na
+    var float lastSwingLowClose = na
+    var float currentPeriodHighestClose = na
+    var float currentPeriodLowestClose = na
+    var float frozenPriorSwingHighClose = na
+    var float frozenPriorSwingLowClose = na
+
+    var bool delayedFpiReversal = false
+    var int delayedFpiDirection = 0
+    var float delayedFpiTop = na
+    var float delayedFpiBottom = na
+    var float delayedFpiBreakLevel = na
+    var int delayedFpiWindow = -1
+    var int delayedFpiArmedBar = na
+
+    var bool targetWindowLock = false
+    var int targetLockWindow = -1
+
+    var float currentPeriodLow = na
+    var float sessionPriceLow = na
+    var float sessionExtremeHigh = na
+    var float sessionExtremeLow = na
+    var float sessionClosedPoints = 0.0
+    var box sessionResultBox = na
+    var box confluenceStatusBox = na
+    var box dailyTradeLogBox = na
+
+    var bool recordedTradeOpen = false
+    var int recordedTradeDirection = 0
+    var float recordedEntry = na
+    var float recordedSl = na
+    var float recordedTp = na
+    var int recordedWindow = -1
+    var int recordedTradePhaseStartWindow = 0
+    var int recordedSlot = -1
+    var int recordedEntryBar = na
+    var int recordedClosedTradesAtEntry = 0
+    var float recordedTarget = na
+    var float recordedMaxProfitPoints = 0.0
+    var bool recordedBreakEvenArmed = false
+    var bool recordedEarlyReversal = false
+    var bool recordedNarrativeHoldConfirmed = false
+    var int recordedOriginKind = SOURCE_NONE
+    var float recordedOriginTop = na
+    var float recordedOriginBottom = na
+    var bool campaignHoldAnchorFound = false
+    var int campaignHoldAnchorWindow = -1
+    var float campaignHoldAnchorTop = na
+    var float campaignHoldAnchorBottom = na
+    var bool campaignAnchorSelectionConsumed = false
+    var bool campaignReentryWait = false
+    var int campaignReentryExitWindow = -1
+    var bool campaignReentryAlignedOnly = false
+    var bool recoveryTradeWatchEligible = false
+    var int recoveryTradeFpiWindow = -1
+    var float recoveryTradeFpiTop = na
+    var float recoveryTradeFpiBottom = na
+    var bool recoveryTradeAcceptanceSeen = false
+    var int recoveryTradeAcceptanceBar = na
+    var bool failedRecoveryWait = false
+    var int failedRecoveryExitWindow = -1
+    var bool reversalModeActive = false
+    var int reversalModeDirection = 0
+    var int reversalModeStartWindow = -1
+    var bool reversalOpeningPairConsumed = false
+    var bool intervalReentryWait = false
+    var int intervalReentryExitWindow = -1
+    var int intervalReentryDirection = 0
+
+    // Persistent sequence memory. A reversal foundation is built from a validated
+    // counter-FPI OB/IMB pair. The first completed foundation confirmation may enter
+    // early at the phase extreme; later controller/Macro reclaim upgrades the hold.
+    var bool bullRevFoundationBuilding = false
+    var bool bullRevFoundationReady = false
+    var bool bullRevFoundationUsed = false
+    var bool bullRevFoundationHasOb = false
+    var bool bullRevFoundationHasImb = false
+    var float bullRevFoundationTop = na
+    var float bullRevFoundationBottom = na
+    var float bullRevFoundationObTop = na
+    var float bullRevFoundationObBottom = na
+    var float bullRevFoundationImbTop = na
+    var float bullRevFoundationImbBottom = na
+    var int bullRevFoundationWindow = -1
+    var int bullRevFoundationAgainstFpiWindow = -1
+    var int bullRevFoundationConfirmBar = na
+
+    var bool bearRevFoundationBuilding = false
+    var bool bearRevFoundationReady = false
+    var bool bearRevFoundationUsed = false
+    var bool bearRevFoundationHasOb = false
+    var bool bearRevFoundationHasImb = false
+    var float bearRevFoundationTop = na
+    var float bearRevFoundationBottom = na
+    var float bearRevFoundationObTop = na
+    var float bearRevFoundationObBottom = na
+    var float bearRevFoundationImbTop = na
+    var float bearRevFoundationImbBottom = na
+    var int bearRevFoundationWindow = -1
+    var int bearRevFoundationAgainstFpiWindow = -1
+    var int bearRevFoundationConfirmBar = na
+
+    var LedgerRefs ledger = LedgerRefs.new(
+        ledgerCountByWindow,
+        ledgerTradeRows,
+        ledgerEntryRows,
+        ledgerSlRows,
+        ledgerTpRows,
+        ledgerResultRows,
+        ledgerEntryTimeRows,
+        ledgerOpenRows,
+        ledgerClosedPointsByWindow,
+        holdingByWindow,
+        pullbackByWindow,
+        tradeCellByWindow,
+        entryCellByWindow,
+        slCellByWindow,
+        tpCellByWindow,
+        resultCellByWindow
+    )
+
+    // One-bar visual/execution flags.
+    bool buyEntryNow = false
+    bool sellEntryNow = false
+    bool exitNow = false
+    int closedDirectionNow = 0
+    bool openingFpiLockReleasedNow = false
+    bool campaignLegNow = false
+    int campaignLegDirection = 0
+    float campaignLegPrice = na
+    bool selectedFpiNow = false
+    int selectedFpiWindow = -1
+    int selectedFpiDirection = 0
+    float selectedFpiTop = na
+    float selectedFpiBottom = na
+    bool reversalModeActivatedNow = false
+    bool reversalModeReleasedNow = false
+    bool drawEntryTriangleNow = false
+    int drawEntryTriangleDirection = 0

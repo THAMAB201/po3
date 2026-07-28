@@ -1,0 +1,252 @@
+    float drawEntryTrianglePrice = na
+    bool drawExitTriangleNow = false
+    int drawExitTriangleDirection = 0
+    float drawExitTrianglePrice = na
+    int drawClosedTradeEntryBar = na
+    float drawClosedTradeEntryPrice = na
+
+    int currentWindow = windowIdAt(0)
+    int middleWindow = windowIdAt(1)
+    int nowMinute = minuteAt(0)
+    int currentNyPhase = sessionPhaseFromMinute(nowMinute)
+    bool sessionStart = inSession and not inSession[1]
+    bool nyPhaseChanged = inSession and not sessionStart and currentNyPhase != SESSION_PHASE_NONE and currentNyPhase != activeNyPhase
+    bool newPeriod = inSession and currentWindow >= 0 and currentWindow != stateWindow
+    bool finalTradableBar = inSession and nowMinute == FORCE_FLAT_MINUTE - 1
+    bool entryTimeAllowed = inSession and (not cfg.forceFlatBy450 or nowMinute < FORCE_FLAT_MINUTE - 1)
+    bool sessionEnded = not inSession and inSession[1]
+    bool exactHalfHourBoundary = nowMinute >= SESSION_OPEN_MINUTE and nowMinute <= SESSION_END_MINUTE and (nowMinute - SESSION_OPEN_MINUTE) % PERIOD_MINUTES == 0
+    bool exactDividerBar = exactHalfHourBoundary and (not isSubMinuteVisualTimeframe or second(time, TZ) == 0)
+
+    if drawPeriodDividers and isVisualTimeframe and barstate.isconfirmed and exactDividerBar and (inSession or sessionEnded)
+        line.new(x1=time, y1=low, x2=time, y2=high, xloc=xloc.bar_time, extend=extend.both, color=color.new(color.black, 0), style=line.style_solid, width=1)
+
+    // Reconstruct the one-minute FPI drawings when the chart itself is 2-15 minutes.
+    // This is deliberately visual-only: TradingView strategies still place orders on
+    // the chart timeframe, so all economic execution remains restricted to the 1m chart.
+    if cfg.showOneMinuteDrawingsThrough15m and isHigherVisualTimeframe
+        [oneMinuteTimes, oneMinuteCloseTimes, oneMinuteOpens, oneMinuteHighs, oneMinuteLows, oneMinuteCloses] = request.security_lower_tf(syminfo.tickerid, "1", [time, time_close, open, high, low, close])
+        int intrabarCount = array.size(oneMinuteTimes)
+        if intrabarCount > 0
+            for intrabarIndex = 0 to intrabarCount - 1
+                int eventTime = array.get(oneMinuteTimes, intrabarIndex)
+                int eventCloseTime = array.get(oneMinuteCloseTimes, intrabarIndex)
+                bool eventMinuteConfirmed = barstate.ishistory or eventCloseTime <= timenow
+                if eventMinuteConfirmed and (na(mtfLastProcessedTime) or eventTime > mtfLastProcessedTime)
+                    float eventOpen = array.get(oneMinuteOpens, intrabarIndex)
+                    float eventHigh = array.get(oneMinuteHighs, intrabarIndex)
+                    float eventLow = array.get(oneMinuteLows, intrabarIndex)
+                    float eventClose = array.get(oneMinuteCloses, intrabarIndex)
+                    int eventMinute = minuteFromTimestamp(eventTime)
+
+                    if eventMinute == SESSION_OPEN_MINUTE
+                        for visualWindow = 0 to LAST_WINDOW_ID
+                            array.set(mtfSelectedByWindow, visualWindow, false)
+                        mtfMacro950Found := false
+                    if eventMinute == SESSION_OPEN_MINUTE or eventMinute == NY_AM_END_MINUTE or eventMinute == NY_PM_START_MINUTE
+                        mtfSessionAnchorDirection := 0
+                        array.fill(mtfOrderBlockState, na)
+
+                    if not na(mtfPrevious2Time) and not na(mtfPrevious1Time)
+                        bool visualBullFpi = mtfPrevious1Close > mtfPrevious1Open and mtfPrevious2High < eventLow
+                        bool visualBearFpi = mtfPrevious1Close < mtfPrevious1Open and mtfPrevious2Low > eventHigh
+                        int visualDirection = visualBullFpi ? 1 : visualBearFpi ? -1 : 0
+                        int visualMiddleMinute = minuteFromTimestamp(mtfPrevious1Time)
+                        int visualWindow = windowIdFromMinute(visualMiddleMinute)
+                        float visualTop = visualBullFpi ? eventLow : visualBearFpi ? mtfPrevious2Low : na
+                        float visualBottom = visualBullFpi ? mtfPrevious2High : visualBearFpi ? eventHigh : na
+                        bool visualMiddleInMacro950 = visualMiddleMinute >= MACRO_950_START_MINUTE and visualMiddleMinute < MACRO_950_END_MINUTE
+
+                        if visualDirection != 0 and visualMiddleInMacro950 and not mtfMacro950Found
+                            mtfMacro950Found := true
+                            if drawStructureVisuals
+                                box.new(left=mtfPrevious2Time, top=visualTop, right=minuteTimestampFrom(eventTime, MACRO_950_TRADE_END), bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? "9:50-10:10 FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+                        bool visualMiddleInExactPeriod = visualWindow >= 0 and visualMiddleMinute >= periodStartMinute(visualWindow) and visualMiddleMinute < periodEndMinute(visualWindow)
+                        bool visualFirstFpi = visualMiddleInExactPeriod and visualDirection != 0 and not array.get(mtfSelectedByWindow, visualWindow)
+                        if visualFirstFpi
+                            array.set(mtfSelectedByWindow, visualWindow, true)
+                            int visualPhase = sessionPhaseFromMinute(visualMiddleMinute)
+                            if mtfSessionAnchorDirection == 0 and visualWindow == controllerWindowForPhase(visualPhase)
+                                mtfSessionAnchorDirection := visualDirection
+                            if drawStructureVisuals
+                                int visualStartTime = minuteTimestampFrom(eventTime, periodStartMinute(visualWindow))
+                                int visualEndTime = minuteTimestampFrom(eventTime, periodEndMinute(visualWindow))
+                                int visualLeftTime = math.max(mtfPrevious2Time, visualStartTime)
+                                box.new(left=visualLeftTime, top=visualTop, right=visualEndTime, bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? periodLabel(visualWindow) + " FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+                    if eventMinute >= SESSION_OPEN_MINUTE and eventMinute < SESSION_END_MINUTE
+                        [visualObDirection, visualObTop, visualObBottom, visualObLeftTime] = visualOrderBlockStep(mtfOrderBlockState, eventTime, eventOpen, eventHigh, eventLow, eventClose, mtfSessionAnchorDirection)
+                        if visualObDirection != 0 and drawStructureVisuals
+                            box.new(left=visualObLeftTime, top=visualObTop, right=minuteTimestampFrom(eventTime, SESSION_END_MINUTE), bottom=visualObBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualObDirection), border_width=2, bgcolor=fpiFillColor(visualObDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? (visualObDirection == 1 ? "BULLISH OB" : "BEARISH OB") : "", text_size=size.large, text_color=fpiBorderColor(visualObDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+                    mtfPrevious2Time := mtfPrevious1Time
+                    mtfPrevious2High := mtfPrevious1High
+                    mtfPrevious2Low := mtfPrevious1Low
+                    mtfPrevious1Time := eventTime
+                    mtfPrevious1Open := eventOpen
+                    mtfPrevious1High := eventHigh
+                    mtfPrevious1Low := eventLow
+                    mtfPrevious1Close := eventClose
+                    mtfLastProcessedTime := eventTime
+
+    // Seconds charts request the same one-minute source as a higher timeframe. The
+    // confirmed minute is processed once, producing geometry identical to the 1m chart.
+    if cfg.showOneMinuteDrawingsThrough15m and isSubMinuteVisualTimeframe
+        [oneMinuteTime, oneMinuteCloseTime, oneMinuteOpen, oneMinuteHigh, oneMinuteLow, oneMinuteClose] = request.security(syminfo.tickerid, "1", [time, time_close, open, high, low, close], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+        bool oneMinuteConfirmed = barstate.ishistory or oneMinuteCloseTime <= timenow
+        if oneMinuteConfirmed and not na(oneMinuteTime) and (na(mtfLastProcessedTime) or oneMinuteTime > mtfLastProcessedTime)
+            int eventMinute = minuteFromTimestamp(oneMinuteTime)
+            if eventMinute == SESSION_OPEN_MINUTE
+                for visualWindow = 0 to LAST_WINDOW_ID
+                    array.set(mtfSelectedByWindow, visualWindow, false)
+                mtfMacro950Found := false
+            if eventMinute == SESSION_OPEN_MINUTE or eventMinute == NY_AM_END_MINUTE or eventMinute == NY_PM_START_MINUTE
+                mtfSessionAnchorDirection := 0
+                array.fill(mtfOrderBlockState, na)
+
+            if not na(mtfPrevious2Time) and not na(mtfPrevious1Time)
+                bool visualBullFpi = mtfPrevious1Close > mtfPrevious1Open and mtfPrevious2High < oneMinuteLow
+                bool visualBearFpi = mtfPrevious1Close < mtfPrevious1Open and mtfPrevious2Low > oneMinuteHigh
+                int visualDirection = visualBullFpi ? 1 : visualBearFpi ? -1 : 0
+                int visualMiddleMinute = minuteFromTimestamp(mtfPrevious1Time)
+                int visualWindow = windowIdFromMinute(visualMiddleMinute)
+                float visualTop = visualBullFpi ? oneMinuteLow : visualBearFpi ? mtfPrevious2Low : na
+                float visualBottom = visualBullFpi ? mtfPrevious2High : visualBearFpi ? oneMinuteHigh : na
+                bool visualMiddleInMacro950 = visualMiddleMinute >= MACRO_950_START_MINUTE and visualMiddleMinute < MACRO_950_END_MINUTE
+
+                if visualDirection != 0 and visualMiddleInMacro950 and not mtfMacro950Found
+                    mtfMacro950Found := true
+                    if drawStructureVisuals
+                        box.new(left=mtfPrevious2Time, top=visualTop, right=minuteTimestampFrom(oneMinuteTime, MACRO_950_TRADE_END), bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? "9:50-10:10 FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+                bool visualMiddleInExactPeriod = visualWindow >= 0 and visualMiddleMinute >= periodStartMinute(visualWindow) and visualMiddleMinute < periodEndMinute(visualWindow)
+                bool visualFirstFpi = visualMiddleInExactPeriod and visualDirection != 0 and not array.get(mtfSelectedByWindow, visualWindow)
+                if visualFirstFpi
+                    array.set(mtfSelectedByWindow, visualWindow, true)
+                    int visualPhase = sessionPhaseFromMinute(visualMiddleMinute)
+                    if mtfSessionAnchorDirection == 0 and visualWindow == controllerWindowForPhase(visualPhase)
+                        mtfSessionAnchorDirection := visualDirection
+                    if drawStructureVisuals
+                        int visualStartTime = minuteTimestampFrom(oneMinuteTime, periodStartMinute(visualWindow))
+                        int visualEndTime = minuteTimestampFrom(oneMinuteTime, periodEndMinute(visualWindow))
+                        int visualLeftTime = math.max(mtfPrevious2Time, visualStartTime)
+                        box.new(left=visualLeftTime, top=visualTop, right=visualEndTime, bottom=visualBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualDirection), border_width=2, bgcolor=fpiFillColor(visualDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? periodLabel(visualWindow) + " FPI" + (visualDirection == 1 ? "+" : "-") : "", text_size=size.large, text_color=fpiBorderColor(visualDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+            if eventMinute >= SESSION_OPEN_MINUTE and eventMinute < SESSION_END_MINUTE
+                [visualObDirection, visualObTop, visualObBottom, visualObLeftTime] = visualOrderBlockStep(mtfOrderBlockState, oneMinuteTime, oneMinuteOpen, oneMinuteHigh, oneMinuteLow, oneMinuteClose, mtfSessionAnchorDirection)
+                if visualObDirection != 0 and drawStructureVisuals
+                    box.new(left=visualObLeftTime, top=visualObTop, right=minuteTimestampFrom(oneMinuteTime, SESSION_END_MINUTE), bottom=visualObBottom, xloc=xloc.bar_time, border_color=fpiBorderColor(visualObDirection), border_width=2, bgcolor=fpiFillColor(visualObDirection, cfg.fpiBoxTransparency), text=drawStructureTags ? (visualObDirection == 1 ? "BULLISH OB" : "BEARISH OB") : "", text_size=size.large, text_color=fpiBorderColor(visualObDirection), text_halign=text.align_center, text_valign=text.align_center)
+
+            mtfPrevious2Time := mtfPrevious1Time
+            mtfPrevious2High := mtfPrevious1High
+            mtfPrevious2Low := mtfPrevious1Low
+            mtfPrevious1Time := oneMinuteTime
+            mtfPrevious1Open := oneMinuteOpen
+            mtfPrevious1High := oneMinuteHigh
+            mtfPrevious1Low := oneMinuteLow
+            mtfPrevious1Close := oneMinuteClose
+            mtfLastProcessedTime := oneMinuteTime
+
+    if sessionStart
+        activeNyPhase := SESSION_PHASE_AM
+        stateWindow := -1
+        for window = 0 to LAST_WINDOW_ID
+            array.set(selectedByWindow, window, false)
+            array.set(intervalFpiOriginalDirection, window, 0)
+            array.set(intervalFpiTop, window, na)
+            array.set(intervalFpiBottom, window, na)
+            array.set(intervalFpiThreeCandleHigh, window, na)
+            array.set(intervalFpiThreeCandleLow, window, na)
+            array.set(intervalFpiDisrespected, window, false)
+            array.set(intervalFpiRespected, window, false)
+            array.set(intervalFpiFormationBar, window, na)
+            array.set(intervalFpiPersistentAcceptanceSeen, window, false)
+            array.set(intervalFpiPersistentAcceptanceBar, window, na)
+            array.set(intervalFpiReversalUsed, window, false)
+            array.set(intervalBullStructureValidated, window, false)
+            array.set(intervalBearStructureValidated, window, false)
+            array.set(intervalBullObValidated, window, false)
+            array.set(intervalBearObValidated, window, false)
+            array.set(intervalBullImbValidated, window, false)
+            array.set(intervalBearImbValidated, window, false)
+            array.set(intervalBullOpposingImbValidated, window, false)
+            array.set(intervalBearOpposingImbValidated, window, false)
+            array.set(intervalBullStructureTop, window, na)
+            array.set(intervalBullStructureBottom, window, na)
+            array.set(intervalBearStructureTop, window, na)
+            array.set(intervalBearStructureBottom, window, na)
+            array.set(intervalBullStructureKind, window, SOURCE_NONE)
+            array.set(intervalBearStructureKind, window, SOURCE_NONE)
+            array.set(intervalBullEntryUsed, window, false)
+            array.set(intervalBearEntryUsed, window, false)
+            array.set(intervalAuthorityQualified, window, false)
+            array.set(intervalAuthorityValid, window, false)
+            array.set(intervalAuthorityDirection, window, 0)
+            array.set(intervalAuthorityBoundary, window, na)
+            array.set(intervalAuthorityKind, window, SOURCE_NONE)
+            array.set(intervalAuthorityQualifiedBar, window, na)
+            array.set(bgobValidByWindow, window, false)
+            array.set(bgobUsedByWindow, window, false)
+            array.set(bgobDirectionByWindow, window, 0)
+            array.set(bgobTopByWindow, window, na)
+            array.set(bgobBottomByWindow, window, na)
+            array.set(bgobFormationBarByWindow, window, na)
+            array.set(bgobBreakConfirmedByWindow, window, false)
+            array.set(bgobBreakBarByWindow, window, na)
+            array.set(nestedBgobImbValidByWindow, window, false)
+            array.set(nestedBgobImbUsedByWindow, window, false)
+            array.set(nestedBgobImbDirectionByWindow, window, 0)
+            array.set(nestedBgobImbTopByWindow, window, na)
+            array.set(nestedBgobImbBottomByWindow, window, na)
+            array.set(nestedBgobOuterTopByWindow, window, na)
+            array.set(nestedBgobOuterBottomByWindow, window, na)
+            array.set(nestedBgobImbFormationBarByWindow, window, na)
+            array.set(nestedBgobImbStartTimeByWindow, window, na)
+            array.set(nestedBgobImbBreakConfirmedByWindow, window, false)
+            array.set(nestedBgobImbBreakBarByWindow, window, na)
+            array.set(tradeCellByWindow, window, na)
+            array.set(entryCellByWindow, window, na)
+            array.set(slCellByWindow, window, na)
+            array.set(tpCellByWindow, window, na)
+            array.set(resultCellByWindow, window, na)
+            array.set(ledgerCountByWindow, window, 0)
+            array.set(ledgerClosedPointsByWindow, window, 0.0)
+            array.set(holdingByWindow, window, false)
+            array.set(pullbackByWindow, window, false)
+            for slot = 0 to MAX_LEDGER_ROWS - 1
+                int index = ledgerIndex(window, slot)
+                array.set(ledgerTradeRows, index, "")
+                array.set(ledgerEntryRows, index, "")
+                array.set(ledgerSlRows, index, "")
+                array.set(ledgerTpRows, index, "")
+                array.set(ledgerResultRows, index, "")
+                array.set(ledgerEntryTimeRows, index, na)
+                array.set(ledgerOpenRows, index, false)
+        pendingFpi := false
+        pendingAcceptanceConfirmed := false
+        pendingAcceptanceBar := na
+        sessionAnchorFpiFound := false
+        sessionAnchorDirection := 0
+        sessionAnchorTop := na
+        sessionAnchorBottom := na
+        sessionAnchorWindow := -1
+        sessionAnchorBar := na
+        sessionAnchorBox := na
+        sessionFpiRegime := SESSION_REGIME_UNRESOLVED
+        sessionAlignmentProvenByLaterFpi := false
+        sessionAnchorResolutionComplete := false
+        sessionAnchorAcceptanceConfirmed := false
+        sessionAnchorAcceptanceBar := na
+        openingFpiDisrespectConsumed := false
+        openingFpiWindowLock := false
+        openingFpiLockWindow := -1
+        array.clear(confluenceKind)
+        array.clear(confluenceSourceBar)
+        array.clear(confluenceWindow)
+        array.clear(confluenceTop)
+        array.clear(confluenceBottom)
+        array.clear(confluenceBoundary)
+        array.clear(confluenceValid)
+        array.clear(confluenceStructureBox)
+        bullishObRunActive := false
