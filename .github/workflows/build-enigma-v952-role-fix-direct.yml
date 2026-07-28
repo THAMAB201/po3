@@ -1,0 +1,164 @@
+name: Build Enigma V9.5.2 Role Fix Direct
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/triggers/build-enigma-v952-role-fix-direct.txt
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Generate full corrected strategy
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_1_Session_Recovery_Decoupled.pine')
+          target = Path('enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Immutable_Trade_Roles.pine')
+          text = source.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str, name: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f'{name}: expected 1 occurrence, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '"PO3 MMXM Enigma V9.5.1 Session Recovery Decoupled",\n    shorttitle = "PO3E951R",',
+              '"PO3 MMXM Enigma V9.5.2 Immutable Trade Roles",\n    shorttitle = "PO3E952R",',
+              'strategy title',
+          )
+
+          replace_once(
+              'int PHASE_DELIVERY = 3\n',
+              'int PHASE_DELIVERY = 3\n\n// Immutable trade roles: direction relative to Session FPI is the only classifier.\nint ROLE_NONE = 0\nint ROLE_SESSION = 1\nint ROLE_JUDAS = 2\n',
+              'role constants',
+          )
+
+          replace_once(
+              'sideColor(int direction) => direction == market.DIR_LONG ? color.green : direction == market.DIR_SHORT ? color.red : color.gray\n',
+              'sideColor(int direction) => direction == market.DIR_LONG ? color.green : direction == market.DIR_SHORT ? color.red : color.gray\n\ntradeRoleFromDirection(int direction, int sessionBiasDirection) =>\n    direction == sessionBiasDirection ? ROLE_SESSION : direction == -sessionBiasDirection ? ROLE_JUDAS : ROLE_NONE\n\nsessionTradeRule(int direction, string familyText) =>\n    familyText + (direction == market.DIR_LONG ? "-BUY" : "-SELL")\n\njudasTradeRule(int direction, string familyText) =>\n    familyText + (direction == market.DIR_LONG ? "-BUY" : "-SELL")\n',
+              'role helpers',
+          )
+
+          replace_once(
+              'confirmedBgobSignal(structure, int direction, int signalWindow, string ruleId, string reasonText) =>',
+              'confirmedBgobSignal(structure, int direction, int signalWindow, bool judasRole, string ruleId, string reasonText) =>',
+              'BGOB signature',
+          )
+
+          replace_once(
+              'signal := market.makeSignal(direction, market.FAMILY_30M_REVERSAL, structure.top, structure.bottom, structure.invalidation, structure.sourceBar, structure.sourceTime, signalWindow, structure.sourceBar, true, false, ruleId, reasonText)',
+              'signal := market.makeSignal(direction, market.FAMILY_30M_REVERSAL, structure.top, structure.bottom, structure.invalidation, structure.sourceBar, structure.sourceTime, signalWindow, structure.sourceBar, true, judasRole, ruleId, reasonText)',
+              'BGOB role flag',
+          )
+
+          replace_once(
+              'string recoveryRule = phase == PHASE_JUDAS ? (recoveryDirection == market.DIR_LONG ? "JUDAS-END-BUY" : "JUDAS-END-SELL") : (recoveryDirection == market.DIR_LONG ? "WINDOW-DELIVERY-BUY" : "WINDOW-DELIVERY-SELL")',
+              'string recoveryRule = sessionTradeRule(recoveryDirection, "SESSION-DELIVERY")',
+              'recovery label',
+          )
+
+          replace_once(
+              'true, phase == PHASE_JUDAS, recoveryRule, "CONFIRMED_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT")',
+              'true, false, recoveryRule, "SESSION_DIRECTION_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST_RESPECT")',
+              'recovery role flag',
+          )
+
+          call_replacements = [
+              (
+                  'confirmedBgobSignal(alignedWindowBgob, recoveryDirection, currentWindow, recoveryDirection == market.DIR_LONG ? "WINDOW-BGOB-BUY" : "WINDOW-BGOB-SELL",',
+                  'confirmedBgobSignal(alignedWindowBgob, recoveryDirection, currentWindow, false, sessionTradeRule(recoveryDirection, "SESSION-WINDOW-BGOB"),',
+                  'session window BGOB',
+              ),
+              (
+                  'confirmedBgobSignal(macroBgob, recoveryDirection, currentWindow, recoveryDirection == market.DIR_LONG ? "MACRO-BGOB-BUY" : "MACRO-BGOB-SELL",',
+                  'confirmedBgobSignal(macroBgob, recoveryDirection, currentWindow, false, sessionTradeRule(recoveryDirection, "SESSION-MACRO-BGOB"),',
+                  'session macro BGOB',
+              ),
+              (
+                  'confirmedBgobSignal(alignedJudasBgob, judasDirection, currentWindow, judasDirection == market.DIR_LONG ? "JUDAS-BGOB-BUY" : "JUDAS-BGOB-SELL",',
+                  'confirmedBgobSignal(alignedJudasBgob, judasDirection, currentWindow, true, judasTradeRule(judasDirection, "JUDAS-WINDOW-BGOB"),',
+                  'Judas window BGOB',
+              ),
+              (
+                  'confirmedBgobSignal(macroBgob, judasDirection, currentWindow, judasDirection == market.DIR_LONG ? "JUDAS-MACRO-BGOB-BUY" : "JUDAS-MACRO-BGOB-SELL",',
+                  'confirmedBgobSignal(macroBgob, judasDirection, currentWindow, true, judasTradeRule(judasDirection, "JUDAS-MACRO-BGOB"),',
+                  'Judas macro BGOB',
+              ),
+          ]
+          for old, new, name in call_replacements:
+              replace_once(old, new, name)
+
+          replace_once(
+              'string judasRule = judasDirection == market.DIR_LONG ? "JUDAS-SEQUENCE-BUY" : "JUDAS-SEQUENCE-SELL"',
+              'string judasRule = judasTradeRule(judasDirection, "JUDAS-SEQUENCE")',
+              'Judas label',
+          )
+
+          replace_once(
+              'true, false, judasRule, "ONE_JUDAS_SEQUENCE_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST")',
+              'true, true, judasRule, "COUNTER_SESSION_EXTREME_OB_BOLO_THEN_ALIGNED_IMB_RETEST")',
+              'Judas role flag',
+          )
+
+          replace_once(
+              'bool entryIsRecovery = sessionCandidateSignal.valid and selectedSignal.direction == sessionDirection\n    bool entryIsJudas = phase == PHASE_JUDAS and judasCandidateSignal.valid and selectedSignal.direction == judasDirection and not entryIsRecovery',
+              '// Role depends only on direction versus Session FPI; phase is context only.\n    int selectedTradeRole = tradeRoleFromDirection(selectedSignal.direction, sessionDirection)\n    bool entryIsRecovery = selectedTradeRole == ROLE_SESSION\n    bool entryIsJudas = selectedTradeRole == ROLE_JUDAS',
+              'order role classification',
+          )
+
+          replace_once(
+              'plot(tradeActive ? tradeDirection : 0, "Active Trade Direction", display = display.data_window)\n',
+              'plot(tradeActive ? tradeDirection : 0, "Active Trade Direction", display = display.data_window)\nplot(tradeActive ? tradeRoleFromDirection(tradeDirection, sessionDirection) : ROLE_NONE, "Active Immutable Trade Role", display = display.data_window)\nplot(tradeActive and tradeIsJudas ? 1 : 0, "Active Trade Is Judas", display = display.data_window)\n',
+              'role diagnostics',
+          )
+
+          forbidden = [
+              '"JUDAS-END-BUY"',
+              '"JUDAS-END-SELL"',
+              'bool entryIsJudas = phase == PHASE_JUDAS',
+              'phase == PHASE_JUDAS, recoveryRule',
+          ]
+          for marker in forbidden:
+              if marker in text:
+                  raise RuntimeError(f'old role logic remains: {marker}')
+
+          required = [
+              'shorttitle = "PO3E952R"',
+              'tradeRoleFromDirection',
+              'SESSION-DELIVERY',
+              'true, true, judasRule',
+              'int selectedTradeRole = tradeRoleFromDirection',
+              'Active Immutable Trade Role',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError(f'missing marker: {marker}')
+
+          target.write_text(text, encoding='utf-8')
+          print(f'Wrote {target} with {len(text.splitlines())} lines')
+          PY
+
+      - name: Commit generated strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Immutable_Trade_Roles.pine
+          git diff --cached --quiet && exit 0
+          git commit -m "Add V9.5.2 immutable Session and Judas trade roles"
+          git push origin HEAD:enigma-v9-3-window-narrative
