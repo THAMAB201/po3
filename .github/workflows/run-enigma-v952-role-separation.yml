@@ -1,0 +1,51 @@
+name: Run Enigma V9.5.2 Role Separation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/triggers/run-enigma-v952-role-separation.txt
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout strategy branch
+        uses: actions/checkout@v4
+        with:
+          ref: enigma-v9-3-window-narrative
+          fetch-depth: 0
+
+      - name: Execute canonical patch script from main
+        shell: bash
+        run: |
+          git fetch origin main
+          python - <<'PY'
+          import subprocess
+          import textwrap
+
+          workflow = subprocess.check_output(
+              ['git', 'show', 'origin/main:.github/workflows/build-enigma-v952-role-separation.yml'],
+              text=True,
+          )
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "          PY\n"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          patch_code = textwrap.dedent(workflow[start:end])
+          exec(compile(patch_code, 'v952_patch.py', 'exec'))
+          PY
+
+      - name: Commit generated strategy
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add enigma/PO3_MMXM_Enigma_Strategy_V9_5_2_Immutable_Trade_Roles.pine
+          git diff --cached --quiet && exit 0
+          git commit -m "Add V9.5.2 immutable Session and Judas trade roles"
+          git push origin HEAD:enigma-v9-3-window-narrative
