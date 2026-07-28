@@ -186,7 +186,8 @@ selectFoundationSeed(librarySeed, bodySeriesSeed, int direction) =>
         copyStructure(result, bodySeriesSeed)
         result.reason := "PRIORITY_CONSECUTIVE_BODY_SERIES_OB_BOLO"
     else
-        result := selectMoreExtreme(librarySeed, bodySeriesSeed, direction)
+        selectedFallback = selectMoreExtreme(librarySeed, bodySeriesSeed, direction)
+        copyStructure(result, selectedFallback)
     result
 
 regularBodyObSeed(int direction, int searchBars, int requiredWindow) =>
@@ -600,20 +601,20 @@ if eligibleFpi
             box macroBox = newZone(fpiEvent.sourceTime, time + (sessionEndMinute(currentSession) - nowMinute) * 60000, fpiEvent.top, fpiEvent.bottom, fpiEvent.direction, sessionName(currentSession) + " FIRST MACRO FPI", math.max(65, zoneTransparency - 8))
             array.push(drawings, macroBox)
 
-// Every FPI may seed its third-candle BGOB. It is not an entry until
-// price closes beyond it, later retests it and closes directionally
-// back outside. First-Macro BGOB state persists across local windows.
-if enableBgobEntries
-    bgobSeed = bgobSeedFromFpi(fpiEvent, currentWindow, belongsToFirstMacro ? "FIRST_MACRO_FPI_BGOB" : "CURRENT_WINDOW_FPI_BGOB")
-    targetBgob = fpiEvent.direction == market.DIR_LONG ? bullBgobCandidate : bearBgobCandidate
-    bool bgobAccepted = not windowResolved and armMoreExtreme(targetBgob, bgobSeed, fpiEvent.direction)
-    if bgobAccepted and drawStructureBoxes
-        box bgobBox = newZone(time, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, bgobSeed.top, bgobSeed.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish BGOB Seed" : "Bearish BGOB Seed", math.max(72, zoneTransparency - 6))
-        array.push(drawings, bgobBox)
-    if belongsToFirstMacro and enableMacroBgobEntries and not macroBgob.active
-        copyStructure(macroBgob, bgobSeed)
-        macroBgob.sourceWindow := currentWindow
-        macroBgob.reason := "PERSISTENT_FIRST_MACRO_BGOB"
+    // Every FPI may seed its third-candle BGOB. It is not an entry until
+    // price closes beyond it, later retests it and closes directionally
+    // back outside. First-Macro BGOB state persists across local windows.
+    if enableBgobEntries
+        bgobSeed = bgobSeedFromFpi(fpiEvent, currentWindow, belongsToFirstMacro ? "FIRST_MACRO_FPI_BGOB" : "CURRENT_WINDOW_FPI_BGOB")
+        targetBgob = fpiEvent.direction == market.DIR_LONG ? bullBgobCandidate : bearBgobCandidate
+        bool bgobAccepted = not windowResolved and armMoreExtreme(targetBgob, bgobSeed, fpiEvent.direction)
+        if bgobAccepted and drawStructureBoxes
+            box bgobBox = newZone(time, time + (market.periodEndMinute(currentWindow) - nowMinute) * 60000, bgobSeed.top, bgobSeed.bottom, fpiEvent.direction, fpiEvent.direction == market.DIR_LONG ? "Bullish BGOB Seed" : "Bearish BGOB Seed", math.max(72, zoneTransparency - 6))
+            array.push(drawings, bgobBox)
+        if belongsToFirstMacro and enableMacroBgobEntries and not macroBgob.active
+            copyStructure(macroBgob, bgobSeed)
+            macroBgob.sourceWindow := currentWindow
+            macroBgob.reason := "PERSISTENT_FIRST_MACRO_BGOB"
 
     // Persist every current-window imbalance at formation. It remains only a
     // candidate until an exact OB/BOLO foundation binds it and a later retest
@@ -946,8 +947,10 @@ else if judasBgobSignal.valid
 
 bool sessionBgobBuilding = sessionDirection == market.DIR_LONG ? bullBgobCandidate.active and (bullBgobCandidate.status == market.STATUS_BROKEN or bullBgobCandidate.status == market.STATUS_CONFIRMED) : bearBgobCandidate.active and (bearBgobCandidate.status == market.STATUS_BROKEN or bearBgobCandidate.status == market.STATUS_CONFIRMED)
 bool judasBgobBuilding = judasDirection == market.DIR_LONG ? bullBgobCandidate.active and (bullBgobCandidate.status == market.STATUS_BROKEN or bullBgobCandidate.status == market.STATUS_CONFIRMED) : bearBgobCandidate.active and (bearBgobCandidate.status == market.STATUS_BROKEN or bearBgobCandidate.status == market.STATUS_CONFIRMED)
-bool sessionBuildReady = recoverySupport.active or sessionBgobBuilding or enableMacroBgobEntries and macroBgob.active and macroBgob.direction == sessionDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED)
-bool judasBuildReady = judasSupport.active or judasBgobBuilding or enableMacroBgobEntries and macroBgob.active and macroBgob.direction == judasDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED)
+bool macroBgobBuildingSession = enableMacroBgobEntries and macroBgob.active and macroBgob.direction == sessionDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index)
+bool macroBgobBuildingJudas = enableMacroBgobEntries and macroBgob.active and macroBgob.direction == judasDirection and (macroBgob.status == market.STATUS_BROKEN or macroBgob.status == market.STATUS_CONFIRMED and macroBgob.confirmBar == bar_index)
+bool sessionBuildReady = recoverySupport.active or sessionBgobBuilding or macroBgobBuildingSession
+bool judasBuildReady = judasSupport.active or judasBgobBuilding or macroBgobBuildingJudas
 
 if enableAdaptiveNarrativeArbiter and windowNarrative == NARRATIVE_SEARCH
     if sessionBuildReady and not judasBuildReady
@@ -964,8 +967,8 @@ if enableAdaptiveNarrativeArbiter and windowNarrative == NARRATIVE_SEARCH
         windowNarrativeDirection := authorityFavorsJudas ? judasDirection : sessionDirection
         windowNarrativeLockBar := bar_index
 
-bool sessionLockInvalid = windowNarrative == NARRATIVE_SESSION_LOCKED and not recoverySupport.active and not sessionBgobBuilding and not (macroBgob.active and macroBgob.direction == sessionDirection and macroBgob.status != market.STATUS_INVALID)
-bool judasLockInvalid = windowNarrative == NARRATIVE_JUDAS_LOCKED and not judasSupport.active and not judasBgobBuilding and not (macroBgob.active and macroBgob.direction == judasDirection and macroBgob.status != market.STATUS_INVALID)
+bool sessionLockInvalid = windowNarrative == NARRATIVE_SESSION_LOCKED and not recoverySupport.active and not sessionBgobBuilding and not macroBgobBuildingSession
+bool judasLockInvalid = windowNarrative == NARRATIVE_JUDAS_LOCKED and not judasSupport.active and not judasBgobBuilding and not macroBgobBuildingJudas
 if enableAdaptiveNarrativeArbiter and not windowTradeTaken and (sessionLockInvalid or judasLockInvalid)
     windowNarrative := NARRATIVE_SEARCH
     windowNarrativeDirection := market.DIR_NONE
@@ -1004,8 +1007,8 @@ bool oppositeToTrade = tradeActive and selectedSignal.valid and selectedSignal.d
 bool canOpenOrReverse = (freshEntry or oppositeToTrade) and (not oneTradePerWindow or not windowTradeTaken)
 
 if canSubmit and selectedSignal.valid and canOpenOrReverse
-    bool entryIsRecovery = recoverySignal.valid and selectedSignal.direction == sessionDirection
-    bool entryIsJudas = phase == PHASE_JUDAS and selectedSignal.direction == judasDirection and not entryIsRecovery
+    bool entryIsRecovery = sessionCandidateSignal.valid and selectedSignal.direction == sessionDirection
+    bool entryIsJudas = phase == PHASE_JUDAS and judasCandidateSignal.valid and selectedSignal.direction == judasDirection and not entryIsRecovery
     float entryPrice = close
     float stopValue = deferStructuralExitToIntervalClose ? maximumRiskStop(selectedSignal.direction, entryPrice) : boundedStop(selectedSignal.direction, entryPrice, selectedSignal.invalidation)
     float targetValue = entryIsJudas and judasUsesNoFixedTarget ? na : entryIsRecovery and deliveryUsesFixedTarget ? (selectedSignal.direction == market.DIR_LONG ? entryPrice + deliveryTargetPoints : entryPrice - deliveryTargetPoints) : na
